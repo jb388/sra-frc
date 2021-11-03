@@ -1,0 +1,54 @@
+---
+title: "Sierra Nevada Fraction Analysis"
+author: J. Beem-Miller
+date: \textit{\today}
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+  html_notebook:
+    css: "custom.css"
+    toc: yes
+    toc_depth: 2
+header_includes:
+- \usepackage[utf8]{inputenc}
+- \usepackage{float}
+---
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = 'center', dev = c('cairo_pdf', 'png'), fig.width = 6.5,
+                      fig.height = 3.5)
+options(scipen = 5)
+# load page breaks fx
+source("./utilities/page_break_Rmd.R")
+```
+
+```{r setup, include = FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(SoilR)
+library(openxlsx)
+library(ISRaD)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(gt)
+library(scales)
+```
+
+```{r plot-funs}
+# color palettes for ECO & PM
+warm <- "#BF812D"
+cool <- "#80CDC1"
+cold <- "#01665E"
+granite <- "#9daba9"
+andesite <- "#382dbf"
+basalt <- "#bf382d"
+```

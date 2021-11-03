@@ -1,0 +1,13 @@
+Files:
+  - "Dichtefraktionierung_Jeff_2020.xls"
+Source: Manuel Rost (mrost@bgc-jena.mpg.de)
+Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
+Date: 05-May-2021
+Contents:
+  - density fractionation worksheet with mass data
+Notes:
+  - Density fractionation performed with an SPT solution at a density of 1.8 g cm^-3
+  - Sonication for occluded light fraction conducted at 300 J ml^-1 equivalent
+  - samples rinsed of SPT until conductivity dropped below 50 µS
+  - derived data files generated using the pivot table function on the data contained in 'Tabelle 1'
+References:
