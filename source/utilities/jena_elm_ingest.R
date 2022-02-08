@@ -9,11 +9,11 @@ library(readxl)
 
 read_jena_elm_results <- function(jena_elm_dir, template_file) {
   if(missing(template_file)) {
-    template_file <- "../data/raw/elm_jena_template_2020-10-22/elm_jena_template.xls"
+    template_file <- "../data/raw/elm_jena_template/elm_jena_template.xls"
   }
   
   # start input at column header row (skip 1st row)
-  template <- data.frame(read_excel(template_file, sheet = "Pivot", skip = 1))
+  template <- read_excel(template_file, sheet = "Pivot")
   
   # get pathnames for .xlsx files in jena_ams_dir
   data_files <- list.files(jena_elm_dir, pattern = "\\.xls", full.names = TRUE)
@@ -22,7 +22,7 @@ read_jena_elm_results <- function(jena_elm_dir, template_file) {
   
   # check that row 2 column names match the template
   for(i in seq_along(data_files)) {
-    if(any(is.na(match(names(read_excel(data_files[i], sheet = "Pivot", skip = 1))[1:3], names(template)[1:3])))) {
+    if(any(is.na(match(names(read_excel(data_files[i], sheet = "Pivot", skip = 1)), names(template))))) {
       cat("Row 2 of ", data_files[i], " does not contain proper column names")
     }
   }
@@ -31,6 +31,7 @@ read_jena_elm_results <- function(jena_elm_dir, template_file) {
   data_ls <- lapply(seq_along(data_files), function(i) {
     df <- data.frame(read_excel(data_files[i], sheet = "Pivot", skip = 1))
     df <- df[c(1:nrow(df)-1), 1:3] # remove summary row at bottom and only take ID, C, N
+    names(df)[1] <- "ID"
     return(df)
   })
   
