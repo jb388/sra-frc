@@ -1,0 +1,13 @@
+Files:
+  - Beem-Miller_25.xlsx
+  - Beem-Miller_26.xlsx
+Source: Axel Steinhof <steinhof@bgc-jena.mpg.de>
+Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
+Date: 24-Jan-2022
+Contents:
+  - 14C data from free light and occluded light fraction samples from 2001 and 2019 sampling
+Notes:
+  - used C. Rasmussen's method for density fraction
+  - missing oPOM samples 2-9 because they needed to be scraped off of filters
+References:
+  - Rasmussen C, Throckmorton H, Liles G, Heckman K, Meding S, Horwath WR. Controls on Soil Organic Carbon Partitioning and Stabilization in the California Sierra Nevada. Soil Systems. 2018; 2(3):41. https://doi.org/10.3390/soilsystems2030041

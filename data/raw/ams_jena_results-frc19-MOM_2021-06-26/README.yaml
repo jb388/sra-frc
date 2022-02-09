@@ -1,0 +1,41 @@
+Files: Beem-Miller_24.xlsx
+Source: Axel Steinhof <steinhof@bgc-jena.mpg.de>
+Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
+Date: 26-Jun-2021
+Contents:
+  - 14C data from heavy fraction samples from 2019 sampling
+Notes:
+  - used C. Rasmussen's method for density fraction
+  - some samples were lost in the lab and were redone, so are not included here
+  - sample names suffixes "_a" and "_b" refer to C and N duplicates, but only the "_a" samples were run for 14C
+  - Sample names:
+    - 01_GRrf_comp_2019_0-10_MOM_a
+    - 01_GRrf_comp_2019_0-10_MOM_b
+    - 02_GRrf_comp_2019_10-20_MOM
+    - 03_GRrf_comp_2019_20-30_MOM
+    - 04_GRwf_comp_2019_0-10_MOM
+    - 05_GRwf_comp_2019_10-20_MOM
+    - 06_GRwf_comp_2019_20-30_MOM
+    - 07_GRpp_comp_2019_0-10_MOM
+    - 08_GRpp_comp_2019_10-20_MOM
+    - 09_GRpp_comp_2019_20-30_MOM
+    - 10_ANrf_comp_2019_0-10_MOM
+    - 11_ANrf_comp_2019_10-20_MOM_a
+    - 11_ANrf_comp_2019_10-20_MOM_b
+    - 12_ANrf_comp_2019_20-30_MOM
+    - 13_ANwf_comp_2019_0-10_MOM
+    - 14_ANwf_comp_2019_10-20_MOM
+    - 15_ANwf_comp_2019_20-30_MOM
+    - 16_ANpp_comp_2019_0-10_MOM
+    - 17_ANpp_comp_2019_10-20_MOM
+    - 18_ANpp_comp_2019_20-30_MOM
+    - 20_BSrf_comp_2019_10-20_MOM
+    - 21_BSrf_comp_2019_20-30_MOM_a
+    - 21_BSrf_comp_2019_20-30_MOM_b
+    - 22_BSwf_comp_2019_0-10_MOM
+    - 23_BSwf_comp_2019_10-20_MOM
+    - 24_BSwf_comp_2019_20-30_MOM
+    - 26_BSpp_comp_2019_10-20_MOM
+    - 27_BSpp_comp_2019_20-30_MOM
+References:
+  - Rasmussen C, Throckmorton H, Liles G, Heckman K, Meding S, Horwath WR. Controls on Soil Organic Carbon Partitioning and Stabilization in the California Sierra Nevada. Soil Systems. 2018; 2(3):41. https://doi.org/10.3390/soilsystems2030041

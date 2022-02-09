@@ -1,0 +1,24 @@
+Files: Stoner_26.xlsx
+Source: Shane Stoner
+Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
+Date: 20-Jan-2022
+Contents:
+  - 14C data from thermally fractionated heavy samples ANwf and GRwf (20-30cm, 2019)
+Notes:
+  - 5 temperature cuts for each samples
+  - Made temperature cuts based on thermograms, i.e. "peak fitting"
+  - thermally fractionated on 4 May 2021
+  - temperature cuts:
+    - ANwf_MOM_20-30_2019
+      - 140-245
+      - 245-340
+      - 340-390
+      - 390-495
+      - 495-791
+    - GRwf_MOM_20-30_2019
+      - 140-245
+      - 245-290
+      - 290-364
+      - 364-484
+      - 484-792
+References:
