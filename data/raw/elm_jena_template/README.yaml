@@ -1,10 +1,12 @@
-Files: "elm_jena_template.xlsx"
+Files:
+  - "elm_jena_template.xlsx"
+  - "elm_jena_template2.xlsx"
 Source: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
 Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
-Date: 05-Nov-2021
+Date: 16-Mar-2022
 Contents:
   - template for C and N results from Jena facility (ROMA)
 Notes:
   - used to check inputs for automated file reading script when ingesting Jena CN data
-  - template differs from previous projects as facility changed output of results files
+  - had to make second template as the pivot table names were different for bulk soil data...
 References:

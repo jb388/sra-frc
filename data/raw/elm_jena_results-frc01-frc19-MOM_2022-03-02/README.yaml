@@ -1,0 +1,40 @@
+Files: "Beem-Miller_MOM-samples_EL5988_DB_report.xls"
+Source: Ines Hilke (ihilke@bgc-jena.mpg.de)
+Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
+Date: 03-Mar-2022
+Contents:
+  - carbon and nitrogen content for 2001 Sierra Nevada heavy fraction soil samples
+Notes:
+  - fractionated sample is a composite of the three spatially replicated profiles, by depth
+  - "R" suffix indicates a sample for which the density fractionation procedure had to be redone
+  - added sheet "Pivot" to split C and N data into individual columns; this is necessary to match the template file for ingest
+  - Sample names:
+    - 10_ANrf_comp_2019_0-10_MOM_R
+    - 11_ANrf_comp_2019_10-20_MOM_R
+    - 12_ANrf_comp_2019_20-30_MOM_R
+    - 19_BSrf_comp_2019_0-10_MOM_R
+    - 25_BSpp_comp_2019_0-10_MOM_R
+    - 28_GRrf_comp_2001_0-8_MOM
+    - 29_GRrf_comp_2001_8-27_MOM
+    - 30_GRwf_comp_2001_0-4_MOM
+    - 31_GRwf_comp_2001_4-13_MOM
+    - 32_GRwf_comp_2001_13-28_MOM
+    - 33_GRpp_comp_2001_0-7_MOM
+    - 34_GRpp_comp_2001_7-15_MOM
+    - 35_GRpp_comp_2001_15-27_MOM
+    - 36_ANrf_comp_2001_0-11_MOM
+    - 37_ANrf_comp_2001_11-32_MOM
+    - 38_ANwf_comp_2001_0-11_MOM
+    - 39_ANwf_comp_2001_11-35_MOM
+    - 40_ANpp_comp_2001_0-6_MOM
+    - 41_ANpp_comp_2001_6-13_MOM
+    - 42_ANpp_comp_2001_13-33_MOM
+    - 43_BSrf_comp_2001_0-8_MOM
+    - 44_BSrf_comp_2001_8-15_MOM
+    - 45_BSrf_comp_2001_15-30_MOM
+    - 46_BSwf_comp_2001_0-10_MOM
+    - 47_BSwf_comp_2001_10-19_MOM
+    - 48_BSpp_comp_2001_0-7_MOM
+    - 49_BSpp_comp_2001_7-18_MOM
+    - 50_BSpp_comp_2001_18-28_MOM
+References:

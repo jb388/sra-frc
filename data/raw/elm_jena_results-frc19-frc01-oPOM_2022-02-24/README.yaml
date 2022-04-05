@@ -1,0 +1,21 @@
+Files: "Beem-Miller_OPOM_EL5976_DB_report.xls"
+Source: Ines Hilke (ihilke@bgc-jena.mpg.de)
+Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
+Date: 24-Feb-2022
+Contents:
+  - carbon and nitrogen content for remaining 2019 Sierra Nevada oPOM fraction soil samples (file 2 of 2)
+Notes:
+  - these were among the first samples processed, and we had initially opted to leave the oPOM sample on the paper filter; however this caused problems, so we ended up scraping off the material at a later date, hence the delay in the results
+  - fractionated sample is a composite of the three spatially replicated profiles, by depth
+  - added sheet "Pivot" to split C and N data into individual columns; this is necessary to match the template file for ingest
+  - Sample names:
+    - 2_GRrf_comp_2019_10-20_OPOM
+    - 3_GRrf_comp_2019_20-30_OPOM
+    - 4_GRwf_comp_2019_0-10_OPOM
+    - 5_GRwf_comp_2019_10-20_OPOM
+    - 6_GRwf_comp_2019_20-30_OPOM
+    - 7_GRpp_comp_2019_0-10_OPOM
+    - 8_GRpp_comp_2019_10-20_OPOM
+    - 9_GRpp_comp_2019_20-30_OPOM
+    - 29_GRrf_comp_2001_8-27_OPOM
+References:
