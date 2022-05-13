@@ -8,6 +8,7 @@ Notes:
   - used C. Rasmussen's method for density fraction
   - some samples were lost in the lab and were redone, so are not included here
   - sample names suffixes "_a" and "_b" refer to C and N duplicates, but only the "_a" samples were run for 14C
+  - note that samples 10-12 (ANrf_MOM) were affected by an increase in the SPT solution density due to evaporation, and were subsequently redone. The values for these samples in 'Beem-Miller_24.xlsx' should be disregarded
   - Sample names:
     - 01_GRrf_comp_2019_0-10_MOM_a
     - 01_GRrf_comp_2019_0-10_MOM_b

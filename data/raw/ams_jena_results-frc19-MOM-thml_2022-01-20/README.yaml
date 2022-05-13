@@ -1,13 +1,35 @@
-Files: Stoner_26.xlsx
+Files:
+  - Stoner_26.xlsx
+  - Stoner_27.xlsx
 Source: Shane Stoner
 Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
 Date: 20-Jan-2022
 Contents:
-  - 14C data from thermally fractionated heavy samples ANwf and GRwf (20-30cm, 2019)
+  - 14C data from thermally fractionated heavy samples ANwf, BSwf, GRwf (20-30cm, 2019)
 Notes:
   - 5 temperature cuts for each samples
   - Made temperature cuts based on thermograms, i.e. "peak fitting"
-  - thermally fractionated on 4 May 2021
+  - ANwf, GRwf thermally fractionated on 4 May 2021
+  - BSwf thermally fractionated Feb. 2022; data sent via email (see below) and copied into Jena AMS template (file name = "BSwf_MOM_20-30_14c.xlsx")
+  - email w/ BSwf data:
+    - "Hey Jeff,
+
+Sorry for not sending them along! Here's my lazy copy-paste.
+
+Fm    Fm_err    D14C    D14C_err    d13C    d13C_err
+
+0.9451    0.0018    -63.1    1.8    -21.83104334    0.093904984
+0.95395    0.002    -54.3    2    -24.93879347    0.010407598
+0.9434    0.002    -64.75    2    -21.54515688    0.023091757
+0.9154    0.0019    -92.5    1.9    -21.81951508    0.018907561
+0.8625    0.0018    -145    1.8    -19.32516199    0.007907809
+
+I guess we probably can't meet this week... but maybe you could send me your code? I'd be curious to see how things are initialized and formatted.
+
+Hope y'all are feeling okay! I guess we'll be around your house sometime later today.
+
+Cheers,
+Shane"
   - temperature cuts:
     - ANwf_MOM_20-30_2019
       - 140-245
@@ -16,6 +38,12 @@ Notes:
       - 390-495
       - 495-791
     - GRwf_MOM_20-30_2019
+      - 140-245
+      - 245-290
+      - 290-364
+      - 364-484
+      - 484-792
+    - BSwf_MOM_20-30_2019
       - 140-245
       - 245-290
       - 290-364

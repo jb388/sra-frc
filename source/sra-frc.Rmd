@@ -41,6 +41,8 @@ library(lmerTest)
 library(emmeans)
 library(gt)
 library(scales)
+library(GSIF)
+library(aqp)
 ```
 
 ```{r load raw-data-ingest fx}
@@ -200,7 +202,7 @@ fill.cn.fx <- function(template, elm_results_ls, year, type) {
   return(template) 
 }
 
-# extract fraction data by year
+# extract layer data by year
 sra.frc.2001.ls <- fill.cn.fx(sra.frc.tmp.2001.ls, elm_results_frcC_ls, 2001, "frc")
 sra.frc.2019.ls <- fill.cn.fx(sra.frc.tmp.2019.ls, elm_results_frcC_ls, 2019, "frc")
 ```
@@ -232,6 +234,30 @@ ams_results_ls <- c(
 names(ams_results_ls) <- unlist(
   c(lapply(strsplit(ams_jena_results_dirs_new, "/(?!.*/)", perl = TRUE), "[[", 2),
     lapply(strsplit(ams_jena_results_dirs_old, "/(?!.*/)", perl = TRUE), "[[", 2)))
+
+# remove flawed ANrf samples
+ANrf.rm <- c("10_ANrf_comp_2019_0-10_MOM", 
+             "11_ANrf_comp_2019_10-20_MOM_a",
+             "12_ANrf_comp_2019_20-30_MOM")
+if (any(!is.na(match(ANrf.rm, ams_results_ls$`ams_jena_results-frc19-MOM_2021-06-26`$`Beem-Miller_24.xlsx`$Probe)))) {
+  ams_results_ls$`ams_jena_results-frc19-MOM_2021-06-26`$`Beem-Miller_24.xlsx` <- ams_results_ls$`ams_jena_results-frc19-MOM_2021-06-26`$`Beem-Miller_24.xlsx`[-match(ANrf.rm, ams_results_ls$`ams_jena_results-frc19-MOM_2021-06-26`$`Beem-Miller_24.xlsx`$Probe), ]
+}
+
+# # separate redos
+# ams_results_redo_ls <- lapply(ams_results_ls, function(ls)
+#     Filter(Negate(is.null), lapply(ls, function(df) {
+#       df_R <- df[grep("_R", df$Probe), ] 
+#       if (nrow(df_R) != 0) {
+#         df_R
+#       }
+#     })))
+# ams_results_redo_df <- bind_rows(Filter(
+#     Negate(is.null), lapply(ams_results_redo_ls, function(ls) {
+#       if (length(ls) > 0) {
+#         bind_rows(ls)
+#       }
+#     }))) %>%
+#   filter(!is.na(F14C))
 ```
 
 ### Mass
@@ -282,6 +308,54 @@ sra.frc.mss.long.df <- sra.frc.mss.wide.df %>%
 sra.frc.mss.long.01.df <- sra.frc.mss.long.df[sra.frc.mss.long.df$year == 2001, ]
 sra.frc.mss.long.19.df <- sra.frc.mss.long.df[sra.frc.mss.long.df$year == 2019, ]
 ```
+
+
+```{r plot-frc-mass-losses}
+# calc loss, drop samples without all weights
+sra.frc.mss.lss.df <- sra.frc.mss.wide.df
+sra.frc.mss.lss.df$sum <- rowSums(sra.frc.mss.lss.df[ , c("FPOM", "OPOM", "MOM")])
+sra.frc.mss.lss.df$loss <- sra.frc.mss.lss.df$wt_g - sra.frc.mss.lss.df$sum
+sra.frc.mss.lss.df$loss_pct <- (sra.frc.mss.lss.df$loss / sra.frc.mss.lss.df$wt_g) * 100
+  
+# summarize losses by PM, ECO
+sra.frc.mss.lss.df$PM <- substr(sra.frc.mss.lss.df$Probe, 1, 2)
+sra.frc.mss.lss.df$ECO <- factor(substr(sra.frc.mss.lss.df$Probe, 3, 4), 
+                                 levels = c("pp", "wf", "rf"))
+sra.frc.mss.lss.df$year <- as.numeric(substr(sra.frc.mss.lss.df$Probe, 11, 14))
+sra.frc.mss.lss.df$depth <- sapply(
+  strsplit(sra.frc.mss.lss.df$Probe, "_(?!.*_)", perl = TRUE), 
+  "[[", 2)
+sra.frc.mss.lss.df$lyr_bot <- as.numeric(ifelse(nchar(sra.frc.mss.lss.df$depth) == 3, substr(sra.frc.mss.lss.df$depth, 3, 3), ifelse(nchar(sra.frc.mss.lss.df$depth) == 4, substr(sra.frc.mss.lss.df$depth, 3, 4), substr(sra.frc.mss.lss.df$depth, 4, 5))))
+
+## summarize
+# summary(lm(loss_pct ~ PM + ECO + year + lyr_bot, 
+#            sra.frc.mss.lss.df[-which(sra.frc.mss.lss.df$Probe == "BSpp_comp_2001_18-28"), ]))
+summary(lm(loss_pct ~ PM + ECO, 
+           sra.frc.mss.lss.df[-which(sra.frc.mss.lss.df$Probe == "BSpp_comp_2001_18-28"), ]))
+
+# plot
+sra.frc.mss.lss.df %>%
+  rename(`Mass loss (%)` = loss_pct) %>%
+  mutate(eco = factor(ifelse(ECO == "pp", "warm",
+                             ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite",
+                     ifelse(PM == "BS", "basalt", "granite"))) %>%
+  ggplot(., aes(ECO, `Mass loss (%)`, color = pm, shape = eco)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("andesite" = andesite,
+                                "basalt" = basalt,
+                                "granite" = granite)) +
+  scale_shape_manual(values = c("warm" = 15,
+                                "cool" = 17,
+                                "cold" = 16)) +
+  facet_grid(cols = vars(year)) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+Interestingly, it appears that AN soils have proportionally LESS minC by mass than do GR or BS soils, significantly so at depth. Why would this be? Possibly because AN soils have higher losses (DOC) during fractionation?
 
 ## External data
 ### Atmosphere
@@ -482,8 +556,82 @@ sra.09.lyr.C <- unsplit(lapply(
   }), soc.09.blkC.df$pro_name)
 ```
 
+### 2019
+
+```{r load-2019-soc}
+load("/Users/jeff/sra-ts/source/sra.2019.ls.RData")
+sra.soc.2019.df <- bind_rows(lapply(sra.2019.ls, function(df) {
+  df %>%
+    filter(lyr_bot < 31) %>%
+    group_by(PM, ECO, lyr_bot) %>%
+    summarize(across(c(C, lyr_soc), mean), .groups = "drop") %>%
+    rename(c_pct_lyr = C)
+}))
+```
 
 ## Fraction C
+### C, CN profiles
+
+```{r plot-c-n-cn}
+# plot depth profiles
+# plot fx
+frc.pro.plot <- function(df, year, fraction, x) {
+  quo_x <- sym(x)
+  xlab <- ifelse(x == "CN", "CN", paste(x, "(%)"))
+  df$ECO <- factor(df$ECO, levels = c("pp", "wf", "rf"))
+  df <- df[order(df$lyr_bot), ]
+  df$middepth <- df$lyr_top + (df$lyr_bot - df$lyr_top) / 2
+  ggplot(df, aes(!! quo_x, middepth, color = PM, shape = ECO)) +
+    geom_hline(yintercept = 0) +
+    geom_point(size = 3) +
+    geom_path() +
+    scale_y_reverse(limits = c(30, 0)) +
+    scale_x_continuous() +
+    scale_color_manual(name = "Parent material",
+                       labels = c("AN" = "andesite",
+                                  "BS" = "basalt",
+                                  "GR" = "granite"),
+                       values = c("AN" = andesite, 
+                                  "BS" = basalt, 
+                                  "GR" = granite)) +
+    scale_shape_manual(name = "Climate",
+                       labels = c("pp" = "warm",
+                                  "rf" = "cold",
+                                  "wf" = "cool"),
+                       values = c("pp" = 15, 
+                                  "rf" = 16, 
+                                  "wf" = 17)) +
+    xlab(xlab) +
+    ylab("Depth (cm)") +
+    ggtitle(paste(year, fraction)) +
+    theme_bw() +
+    theme(panel.grid.minor = element_blank())
+}
+
+# Combine profiles for plotting
+frc.C.01.plot.ls <- lapply(sra.frc.2001.ls, bind_rows, .id = "fraction")
+lapply(seq_along(frc.C.01.plot.ls), function(i) {
+  frc.pro.plot(frc.C.01.plot.ls[[i]], 2001, names(frc.C.01.plot.ls)[i], "C")
+})
+
+frc.C.19.plot.ls <- lapply(sra.frc.2019.ls, bind_rows, .id = "fraction")
+lapply(seq_along(frc.C.19.plot.ls), function(i) {
+  frc.pro.plot(frc.C.19.plot.ls[[i]], 2019, names(frc.C.19.plot.ls)[i], "C")
+})
+
+# Calculate and plot CN
+lapply(seq_along(frc.C.01.plot.ls), function(i) {
+  frc.C.01.plot.ls[[i]][["CN"]] <- frc.C.01.plot.ls[[i]][["C"]] / frc.C.01.plot.ls[[i]][["N"]]
+  frc.pro.plot(frc.C.01.plot.ls[[i]], 2001, names(frc.C.01.plot.ls)[i], "CN")
+})
+lapply(seq_along(frc.C.19.plot.ls), function(i) {
+  frc.C.19.plot.ls[[i]][["CN"]] <- frc.C.19.plot.ls[[i]][["C"]] / frc.C.19.plot.ls[[i]][["N"]]
+  frc.pro.plot(frc.C.19.plot.ls[[i]], 2019, names(frc.C.19.plot.ls)[i], "CN")
+})
+```
+
+### C distribution
+
 ```{r merge-frc-mass-C}
 ## merge C and mass data
 # '01
@@ -494,29 +642,31 @@ sra.frc.mss.C.01.df <- merge(
   mutate(ID2 = sub("comp_2001_", x = ID, replacement = ""))
 
 # calculate C weights
-sra.frc.mss.C.01.df$mass_c_g <- sra.frc.mss.C.01.df$mass_sum *(sra.frc.mss.C.01.df$mass_pct / 100) * (sra.frc.mss.C.01.df$C / 100)
+sra.frc.mss.C.01.df$mass_c_g <- sra.frc.mss.C.01.df$mass_sum * (sra.frc.mss.C.01.df$mass_pct / 100) * (sra.frc.mss.C.01.df$C / 100)
+
+# calc synthetic lyr_c (as sum of frc c masses) and percent
+if (!("lyr_c_mass_syn" %in% names(sra.frc.mss.C.01.df))) {
+  sra.frc.mss.C.01.df <- sra.frc.mss.C.01.df %>%
+    group_by(year, PMeco, lyr_bot) %>%
+    summarize(lyr_c_mass_syn = sum(mass_c_g), .groups = "drop") %>%
+    right_join(., sra.frc.mss.C.01.df, by = c("year", "PMeco", "lyr_bot"))
+}
+sra.frc.mss.C.01.df$frc_c_pct <- sra.frc.mss.C.01.df$mass_c_g / sra.frc.mss.C.01.df$lyr_c_mass_syn
 
 # add lyr C
 sra.frc.mss.C.01.df$lyr_c_pct <- unlist(soc.2001.sum.df[
   match(sra.frc.mss.C.01.df$ID2, soc.2001.sum.df$ID2), "c_pct_mean"])
 
-# calculate fraction percent of total C
-sra.frc.mss.C.01.df$frc_c_pct <- sra.frc.mss.C.01.df$mass_c_g / (sra.frc.mss.C.01.df$lyr_c_pct * sra.frc.mss.C.01.df$mass_sum * 10^-2) * 10^2
-
 # relevel fraction factor
 sra.frc.mss.C.01.df$frc <- factor(sra.frc.mss.C.01.df$frc, 
                                   levels = c("FPOM", "OPOM", "MOM"))
 
-# rescale to 100% for deepest depth
-sra.frc.mss.C.01.rescale.df <- bind_rows(
-    lapply(split(sra.frc.mss.C.01.df, sra.frc.mss.C.01.df$PMeco), function(df) {
-      bind_rows(lapply(split(df, df$depth), function(f) {
-        if (any(f$frc_c_pct > 100)) {
-         f$frc_c_pct <- f$mass_c_g / sum(f$mass_c_g) * 10^2
-        } 
-        return(f)
-      }))
-    }))
+# convert to data.frame
+sra.frc.mss.C.01.df <- data.frame(sra.frc.mss.C.01.df)
+
+# add middepth
+sra.frc.mss.C.01.df$middepth <- sra.frc.mss.C.01.df$lyr_top +
+  (sra.frc.mss.C.01.df$lyr_bot - sra.frc.mss.C.01.df$lyr_top) / 2
 
 # '09
 # sra.09.frc.C$frc_c_perc
@@ -536,8 +686,15 @@ sra.frc.mss.C.19.df$mass_c_g <- sra.frc.mss.C.19.df$mass_sum *(sra.frc.mss.C.19.
 sra.frc.mss.C.19.df$lyr_c_pct <- unlist(sra.blk.2019.sum.df[
   match(sra.frc.mss.C.19.df$ID2, sra.blk.2019.sum.df$ID2), "C_mean"])
 
-# calculate fraction percent of total C
-sra.frc.mss.C.19.df$frc_c_pct <- sra.frc.mss.C.19.df$mass_c_g / (sra.frc.mss.C.19.df$lyr_c_pct * sra.frc.mss.C.19.df$mass_sum * 10^-2) * 10^2
+# calc synthetic lyr_c (as sum of frc c masses) and percent
+if (!("lyr_c_mass_syn" %in% names(sra.frc.mss.C.19.df))) {
+  sra.frc.mss.C.19.df <- sra.frc.mss.C.19.df %>%
+    group_by(year, PMeco, lyr_bot) %>%
+    summarize(lyr_c_mass_syn = sum(mass_c_g), .groups = "drop") %>%
+    right_join(., sra.frc.mss.C.19.df, by = c("year", "PMeco", "lyr_bot"))
+}
+sra.frc.mss.C.19.df$frc_c_pct <- sra.frc.mss.C.19.df$mass_c_g / sra.frc.mss.C.19.df$lyr_c_mass_syn
+sra.frc.mss.C.19.df$ECO <- factor(sra.frc.mss.C.19.df$ECO, levels = c("pp", "wf", "rf"))
 ```
 
 ```{r plot-frcC-pct-fx}
@@ -582,11 +739,11 @@ sra.frc.mss.C.01.prep.fx <- function(df) {
 }
 
 ## PM
-frc_c_pct.plot.fx(sra.frc.mss.C.01.prep.fx(sra.frc.mss.C.01.rescale.df), 
+frc_c_pct.plot.fx(sra.frc.mss.C.01.prep.fx(sra.frc.mss.C.01.df), 
                   fill_var = "PM")
 
 ## ECO
-frc_c_pct.plot.fx(sra.frc.mss.C.01.prep.fx(sra.frc.mss.C.01.rescale.df), 
+frc_c_pct.plot.fx(sra.frc.mss.C.01.prep.fx(sra.frc.mss.C.01.df), 
                   fill_var = "ECO")
 ```
 
@@ -596,128 +753,142 @@ frc_c_pct.plot.fx(sra.frc.mss.C.19.df, "PM")
 frc_c_pct.plot.fx(sra.frc.mss.C.19.df, "ECO")
 ```
 
-## Spline '01, '09
-```{r spline-c-data}
-# spline fit fxs for fraction SOC stocks
-## Mass preserving spline (quadratic)
-mpspline.frc.fx <- function(frc.ls) {
-  lapply(
-    split(frc.ls, frc.ls$frc), function(df) {
-      lapply(split(df, df$PMeco), function(x) {
-        
-        # check for single obs data
-        if (nrow(x) > 1) {
-          
-          # make sure to order data
-          x <- x[order(x$lyr_bot), ] 
-          
-          # calculate cumulative C mass
-          x$mass_c_cmtv <- NA
-          for(i in seq_along(x$lyr_bot)) {
-            if(i == 1) {
-              x$mass_c_cmtv[i] <- x$mass_c_g[i]
-            } else {
-              x$mass_c_cmtv[i] <- x$mass_c_g[i] + x$mass_c_cmtv[i-1] 
-            }
-          }
-          
-          # convert to soil profile collection obj and run mpspline
-          depths(x) <- PMeco ~ lyr_top + lyr_bot
-          x.mps <- suppressMessages(
-            mpspline(x, var.name = "mass_c_cmtv", show.progress = FALSE))
-          
-          # extract 1 cm increment data
-          ix <- which(!is.na(x.mps$var.1cm))
-          df <- data.frame(lyr_bot = seq(1, length(ix)),
-                           lyr_soc = x.mps$var.1cm[ix])
-          
-          # check for NA values up to 30 cm
-          if (length(ix) < 30) {
-            # convert to class "spline" with smooth.spline fxn
-            sp.ss <- smooth.spline(df)
-          
-            # predict for NA values up to 31 cm (linear beyond last measured depth)
-            std <- seq(0, 30) # in cm 
-            sp <- predict(sp.ss, std) 
-            df <- data.frame(sp)
-            colnames(df) <- c("lyr_bot","lyr_soc") 
-          }
-          
-          
-          # extract top 30 cm and calculate 1 cm SOC values
-          for(i in seq_along(df$lyr_soc)) {
-            if(i == 1) {
-              df$lyr_soc[i] <- df$lyr_soc[i]
-            } else {
-              df$lyr_soc[i] <- df$lyr_soc[i + 1] - df$lyr_soc[i]
-            }
-          }
-          
-          # return 
-          return(df$lyr_soc[-length(df$lyr_soc)])
-        }
-      })
-    })
-}
+```{r calc-frc-C-distr-err}
+# make wide dataframe for 2019 frc data
+merge.vars <- c("year", "PM", "ECO", "lyr_bot")
+sra.frc.2019.df <- merge(
+  merge(bind_rows(sra.frc.2019.ls$FPOM)[, c(merge.vars, "C", "N")],
+        bind_rows(sra.frc.2019.ls$OPOM)[, c(merge.vars, "C", "N")],
+        by = merge.vars, suffixes = c("_fPOM", "_oPOM")),
+  bind_rows(sra.frc.2019.ls$MOM)[, c(merge.vars, "C", "N")], by = merge.vars) %>%
+  rename(C_minC = C, N_minC = N)
 
-## depth spline alternative (linear for two increment fits...)
-SOCspline.fx <- function(frc.ls) {
-  lapply(
-    split(frc.ls, frc.ls$frc), function(df) {
-      lapply(split(df, df$PMeco), function(x) {
-    
-        # check for single obs data
-        if (nrow(x) > 1) {
-          
-          # make sure to order data
-          x <- x[order(x$lyr_bot), ] 
-          
-          # calculate cumulative C mass
-          x$mass_c_cmtv <- NA
-          for(i in seq_along(x$lyr_bot)) {
-            if(i == 1) {
-              x$mass_c_cmtv[i] <- x$mass_c_g[i]
-            } else {
-              x$mass_c_cmtv[i] <- x$mass_c_g[i] + x$mass_c_cmtv[i-1] 
-            }
-          }
-          
-          # fit monotonic cubic spline
-          sp <- spline(x[ , c("lyr_bot", "mass_c_cmtv")], method = "hyman") 
-          
-          # convert to class "spline" with smooth.spline fxn
-          sp.ss <- smooth.spline(sp) 
-          
-          # predict 1 cm increments to 30 cm (linear beyond last measured depth)
-          std <- seq(0, 30) # in cm 
-          sp <- predict(sp.ss, std) 
-          df <- data.frame(sp)
-          colnames(df) <- c("lyr_bot","lyr_soc") 
-          
-          # calculate SOC per increment
-          for(i in seq_along(df$lyr_bot)) {
-            if(i == 1) {
-              df$lyr_soc[i] <- df$lyr_soc[i]
-            } else {
-              df$lyr_soc[i] <- df$lyr_soc[i + 1] - df$lyr_soc[i]
-            }
-          }
-          df$lyr_bot <- df$lyr_bot + 1
-          
-          # return 
-          return(df[-length(df$lyr_soc), ])
-        }
-      })
-    })
-}
+# fill missing oPOM data
+sra.frc.mss.wide.fill.df <- sra.frc.mss.lss.df
+sra.frc.mss.wide.fill.df$oPOM <- ifelse(
+  is.na(sra.frc.mss.wide.df$OPOM),
+  sra.frc.mss.wide.df$wt_g - (sra.frc.mss.wide.df$FPOM + sra.frc.mss.wide.df$MOM),
+  sra.frc.mss.wide.df$OPOM)
+
+# calculate mass precentages
+sra.frc.mss.wide.fill.df <- sra.frc.mss.wide.fill.df %>%
+  mutate(fPOM_mass_frac = FPOM / wt_g,
+         oPOM_mass_frac = OPOM / wt_g,
+         minC_mass_frac = MOM / wt_g,
+         PMeco = paste0(PM, ECO))
+
+# # model
+# summary(lm(fPOM_mass_frac ~ PM + ECO, 
+#            sra.frc.mss.wide.fill.df[sra.frc.mss.wide.fill.df$lyr_bot == 10 & sra.frc.mss.wide.fill.df$year == 2019,]))
+# summary(lm(oPOM_mass_frac ~ PM + ECO, 
+#            sra.frc.mss.wide.fill.df[sra.frc.mss.wide.fill.df$lyr_bot == 10 & sra.frc.mss.wide.fill.df$year == 2019,]))
+# summary(lm(minC_mass_frac ~ PM + ECO, 
+#            sra.frc.mss.wide.fill.df[sra.frc.mss.wide.fill.df$lyr_bot == 10 & sra.frc.mss.wide.fill.df$year == 2019,]))
+
+# plot
+sra.frc.mss.fill.plot.df <- sra.frc.mss.wide.fill.df %>%
+  pivot_longer(cols = contains("mass_frac"), names_to = "Fraction", values_to = "Mass percent") %>%
+  mutate(Fraction = factor(Fraction,
+                           levels = c("fPOM_mass_frac", "oPOM_mass_frac", "minC_mass_frac"),
+                           labels = c("fPOM_mass_frac" = "fPOM",
+                                      "oPOM_mass_frac" = "oPOM", 
+                                      "minC_mass_frac" = "minC")))
+
+# 2019
+sra.frc.mss.fill.plot.df %>%
+  filter(year == 2019) %>%
+  ggplot(., aes(PMeco, `Mass percent`, fill = Fraction)) +
+  geom_hline(yintercept = 1, color = "black") +
+  geom_col() +
+  facet_grid(rows = vars(depth)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# 2001 too hard to plot with all depths
+sra.frc.mss.fill.plot.df %>%
+  filter(year == 2001) %>%
+  group_by(PMeco, Fraction) %>%
+  summarize(`Mass percent` = mean(`Mass percent`)) %>%
+  ggplot(., aes(PMeco, `Mass percent`, fill = Fraction)) +
+  geom_hline(yintercept = 1, color = "black") +
+  geom_col() +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# merge w/ frc lists
+sra.frc.soc.2001.ls <- lapply(lapply(sra.frc.2001.ls, bind_rows), function(df) {
+  merge(df, 
+        soc.2001.sum.df %>%
+          mutate(PM = substr(PMeco, 1, 2),
+                 ECO = substr(PMeco, 3, 4)) %>%
+          select(PM, ECO, lyr_bot, lyr_top, c_pct_mean, lyr_soc_kgm2_mean) %>%
+          rename(c_pct_lyr = c_pct_mean,
+                 lyr_soc = lyr_soc_kgm2_mean), 
+        by = c("PM", "ECO", "lyr_bot", "lyr_top")) %>%
+    select(-"ID") %>%
+    mutate(year = 2001)
+})
+sra.frc.soc.2019.ls <- lapply(lapply(sra.frc.2019.ls, bind_rows), function(df) {
+  merge(df, sra.soc.2019.df, by = c("PM", "ECO", "lyr_bot")) %>%
+    select(-c("ID"))
+})
+
+# merge 01, 19
+sra.frc.soc.01.19.ls <- lapply(seq_along(sra.frc.soc.2019.ls), function(i) {
+  rbind(sra.frc.soc.2019.ls[[i]], sra.frc.soc.2001.ls[[i]])
+})
+names(sra.frc.soc.01.19.ls) <- names(sra.frc.soc.2019.ls)
+
+# merge mass frc
+sra.frc.mss.fill.long.ls <- split(sra.frc.mss.fill.plot.df, sra.frc.mss.fill.plot.df$Fraction)
+sra.frc.mss.fill.long.ls <- lapply(sra.frc.mss.fill.long.ls, function(df) {
+  df[ , c("PM", "ECO", "year", "lyr_bot", "Mass percent")]
+})
+sra.frc.soc.ls <- mapply(
+  merge,
+  sra.frc.soc.01.19.ls,
+  sra.frc.mss.fill.long.ls,
+  SIMPLIFY = FALSE)
+
+# Calculate C pct of layer, absolute C, stock per fraction
+sra.frc.soc.df <- bind_rows(sra.frc.soc.ls, .id = "Fraction")
+sra.frc.soc.df$frc_C_lyr <- (sra.frc.soc.df$C * sra.frc.soc.df$`Mass percent`) /
+    sra.frc.soc.df$c_pct_lyr
+sra.frc.soc.wide.df <- pivot_wider(
+  sra.frc.soc.df, 
+  id_cols = c("year", "PM", "ECO", "lyr_bot", "lyr_soc", "c_pct_lyr",), 
+  names_from = c("Fraction"), values_from = c("C", "Mass percent", "frc_C_lyr")) %>%
+  merge(., sra.frc.mss.wide.fill.df[ , c("PM", "ECO", "lyr_bot", "year", "wt_g")])
+
+# sum gC frc
+sra.frc.soc.wide.df$c_pct_lyr_frc <- rowSums(sra.frc.soc.wide.df[, c("frc_C_lyr_FPOM", "frc_C_lyr_OPOM", "frc_C_lyr_MOM")]) * 100
+sra.frc.soc.wide.df$C_diff <- sra.frc.soc.wide.df$c_pct_lyr_frc - 100
 ```
 
-```{r run-cspline-frc}
-# fraction C stocks
-soc.2001.frcSOC.sp <- mpspline.frc.fx(sra.frc.mss.C.01.df)
+```{r plot-c-loss}
+# 2001
+# sra.frc.soc.wide.df %>%
+#   filter(year == 2001) %>%
+#   mutate(PMeco = paste0(PM, ECO)) %>%
+#   ggplot(., aes(PMeco, soc_lost)) +
+#   geom_col() +
+#   facet_grid(rows = vars(lyr_bot)) +
+#   theme_bw() +
+#   theme(panel.grid.minor = element_blank())
 
-# fraction C stocks
-soc.2009.frcSOC.sp <- mpspline.frc.fx(sra.frc.mss.C.01.df) 
+# 2019
+sra.frc.soc.wide.df %>%
+  filter(year == 2019) %>%
+  mutate(Site = factor(paste0(PM, ECO), 
+                       levels = c("ANpp", "ANwf", "ANrf", 
+                                  "BSpp", "BSwf", "BSrf", 
+                                  "GRpp", "GRwf", "GRrf")),
+         `C dif. (% of total stock)` = C_diff) %>%
+  ggplot(., aes(Site, `C dif. (% of total stock)`)) +
+  geom_col() +
+  facet_grid(rows = vars(lyr_bot)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
 ```
 
 ## Fraction 14C
@@ -728,19 +899,22 @@ soc.2009.frcSOC.sp <- mpspline.frc.fx(sra.frc.mss.C.01.df)
 uScoreSplit.fx <- function(df, ix) sapply(strsplit(df[["Probe"]], "_"), "[[", ix)
 
 # create df
-dens.df <- bind_rows(lapply(ams_results_ls, function(ls) {
-  df.ex <- function(x, frc) {
-    bind_rows(lapply(x, function(df) {
-      df[grep(frc, df$Probe), 2:6]
-    }))
-  }
-  fPOM <- df.ex(ls, "FPOM")
-  oPOM <- df.ex(ls, "OPOM")
-  minC <- df.ex(ls, "MOM")
-  return(cbind(rbind(fPOM, oPOM, minC), frc = c(rep("fPOM", nrow(fPOM)),
-                                                rep("oPOM", nrow(oPOM)),
-                                                rep("minC", nrow(minC)))))
-})) %>%
+dens.df <- bind_rows(
+  lapply(
+    ams_results_ls[-grep("thml", names(ams_results_ls))], function(ls) {
+      df.ex <- function(x, frc) {
+        bind_rows(lapply(x, function(df) {
+          df[grep(frc, df$Probe), 2:6]
+        }))
+      }
+      fPOM <- df.ex(ls, "FPOM")
+      oPOM <- df.ex(ls, "OPOM")
+      minC <- df.ex(ls, "MOM")
+      return(
+        cbind(rbind(fPOM, oPOM, minC), frc = c(rep("fPOM", nrow(fPOM)),
+                                               rep("oPOM", nrow(oPOM)),
+                                               rep("minC", nrow(minC)))))
+    })) %>%
   mutate(PMeco = uScoreSplit.fx(., 2),
          PM = substr(PMeco, 1, 2),
          ECO = factor(substr(PMeco, 3, 4), levels = c("pp", "wf", "rf")),
@@ -751,7 +925,8 @@ dens.df <- bind_rows(lapply(ams_results_ls, function(ls) {
          lyr_bot = as.numeric(sapply(strsplit(depths, "-"), "[[", 2))) %>%
   rename(frc_14c = "∆14C.(‰)",
          frc_14c_err = "err.(‰)") %>%
-  select(-c(Probe, depths))
+  select(-c(Probe, depths)) %>%
+  filter(!is.na(frc_14c))
 
 # add '09 data
 dens.01.09.19.df <- rbind(dens.df, sra.frc.14c) %>%
@@ -759,7 +934,8 @@ dens.01.09.19.df <- rbind(dens.df, sra.frc.14c) %>%
                      ifelse(PM == "BS", "basalt", "granite")),
          eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
                       levels = c("warm", "cool", "cold")),
-         year = as.numeric(Year))
+         year = as.numeric(Year),
+         middepth = lyr_top + (lyr_bot - lyr_top) / 2)
 ```
 
 ``` {r plot-profiles}
@@ -816,9 +992,250 @@ dens.pro.p.fx(dens.01.09.19.df, 2019)
 dens.pro.p.fx(dens.01.09.19.df, 2009)
 ```
 
+## Spline '01, '09
+### Spline C
+
+```{r spline-c-data}
+# spline fit fxs for fraction SOC stocks
+## Mass preserving spline (quadratic)
+mpspline.frc.fx <- function(frc.df) {
+  
+  # split by frc and PMeco to fit splines to profiles
+  lapply(
+    split(frc.df, frc.df$frc), function(df) {
+      lapply(split(df, df$PMeco), function(x) {
+        
+        # check for single obs data
+        if (nrow(x) > 1) {
+          
+          # make sure to order data
+          x <- x[order(x$lyr_bot), ] 
+          
+          # calculate cumulative C mass
+          x$mass_c_cmtv <- NA
+          for(i in seq_along(x$lyr_bot)) {
+            if(i == 1) {
+              x$mass_c_cmtv[i] <- x$mass_c_g[i]
+            } else {
+              x$mass_c_cmtv[i] <- x$mass_c_g[i] + x$mass_c_cmtv[i-1] 
+            }
+          }
+          
+          # convert to soil profile collection obj and run mpspline
+          depths(x) <- PMeco ~ lyr_top + lyr_bot
+          x.mps <- suppressMessages(
+            mpspline(x, var.name = "mass_c_cmtv", show.progress = FALSE))
+          
+          # extract 1 cm increment data
+          ix <- which(!is.na(x.mps$var.1cm))
+          df <- data.frame(middepth = seq(1, length(ix)),
+                           lyr_soc = x.mps$var.1cm[ix])
+          
+          # check for NA values up to 30 cm
+          if (length(ix) < 31) {
+            # convert to class "spline" with smooth.spline fxn
+            sp.ss <- smooth.spline(df)
+          
+            # predict for NA values up to 31 cm (linear beyond last measured depth)
+            std <- seq(0, 30) # in cm 
+            sp <- predict(sp.ss, std) 
+            df <- data.frame(sp)
+            colnames(df) <- c("middepth","lyr_soc") 
+          }
+          
+          # return
+          return(df)
+        }
+      })
+    })
+}
+
+## depth spline alternative (linear for two increment fits...)
+SOCspline.fx <- function(frc.df) {
+  
+  # split by frc and PMeco to fit splines to profiles
+  lapply(
+    split(frc.df, frc.df$frc), function(df) {
+      lapply(split(df, df$PMeco), function(x) {
+    
+        # check for single obs data
+        if (nrow(x) > 1) {
+          
+          # make sure to order data
+          x <- x[order(x$lyr_bot), ] 
+          
+          # calculate cumulative C mass
+          x$mass_c_cmtv <- NA
+          for(i in seq_along(x$lyr_bot)) {
+            if(i == 1) {
+              x$mass_c_cmtv[i] <- x$mass_c_g[i]
+            } else {
+              x$mass_c_cmtv[i] <- x$mass_c_g[i] + x$mass_c_cmtv[i-1] 
+            }
+          }
+          
+          # fit monotonic cubic spline
+          sp <- spline(x[ , c("middepth", "mass_c_cmtv")], method = "hyman") 
+          
+          # convert to class "spline" with smooth.spline fxn
+          sp.ss <- smooth.spline(sp) 
+          
+          # predict 1 cm increments to 30 cm (linear beyond last measured depth)
+          std <- seq(0, 30) # in cm 
+          sp <- predict(sp.ss, std) 
+          df <- data.frame(sp)
+          colnames(df) <- c("middepth","lyr_soc") 
+          
+          # return 
+          return(df)
+        }
+      })
+    })
+}
+```
+
+```{r run-cspline-frc}
+# fraction C stocks
+# soc.2009.frcSOC.sp <- mpspline.frc.fx(sra.frc.mss.C.09.df)
+soc.2001.frcSOC.sp <- mpspline.frc.fx(sra.frc.mss.C.01.df)
+soc.2001.frcSOC.sp.df <- lapply(soc.2001.frcSOC.sp, function(ls)
+  lapply(ls, function(df) {
+    # summarize for target intervals
+        df <- data.frame(
+          lyr_bot = c(10, 20, 30),
+          lyr_soc_cmtv = c(df[10, "lyr_soc"],
+                           df[20, "lyr_soc"],
+                           df[30, "lyr_soc"]))
+        df$lyr_soc <- NA
+        for (i in seq_along(df$lyr_bot)) {
+          if(i == 1) {
+              df$lyr_soc[i] <- df$lyr_soc_cmtv[i]
+            } else {
+              df$lyr_soc[i] <- df$lyr_soc_cmtv[i] - df$lyr_soc_cmtv[i - 1] 
+            }
+        }
+        
+        return(df[ , c("lyr_bot", "lyr_soc")])
+  }))
+
+test <- sra.frc.mss.C.01.df %>% 
+  SOCspline.fx
+
+# Measured SOC as ls
+sra.frc.mss.C.01.ls <- lapply(
+  split(sra.frc.mss.C.01.df, sra.frc.mss.C.01.df$frc), function(df)
+    split(df, df$PMeco))
+
+# make spline lists similar for plotting together
+frc.pmeco.fx <- function(soc_ls, name) {
+    lapply(seq_along(soc_ls), function(j)
+      lapply(seq_along(soc_ls[[j]]), function(i) {
+        PMeco <- names(soc_ls[[j]])[i]
+        if (!is.data.frame(soc_ls[[j]][[i]])) {
+          lyr_soc <- soc_ls[[j]][[i]]
+          df <- data.frame(middepth = seq(1, length(lyr_soc)),
+                           lyr_soc = lyr_soc)
+        } else {
+          df <- soc_ls[[j]][[i]]
+        }
+        # add name and return
+        df %>%
+          mutate(id = name,
+                 PMeco = PMeco,
+                 frc = names(soc_ls)[j])
+      }))
+  }
+  
+# run fx
+ls1 <- frc.pmeco.fx(test, "sp")
+ls2 <- frc.pmeco.fx(soc.2001.frcSOC.sp, "mpspline")
+  
+# combine lists
+ls12 <- lapply(seq_along(ls1), function(i)
+  bind_rows(
+    lapply(seq_along(ls1[[i]]), function(j)
+      rbind(ls1[[i]][[j]], ls2[[i]][[j]])
+      ), .id = "PMeco") %>%
+    mutate(PMeco = factor(PMeco, labels = unique(sra.frc.mss.C.01.df$PMeco))))
+
+# calculate cumulative C mass
+sra.frc.mss.C.01.ls2 <- lapply(sra.frc.mss.C.01.ls, function(ls) {
+  lapply(ls, function(df) {
+    df$mass_c_cmtv <- NA
+    for(i in seq_along(df$lyr_bot)) {
+      if(i == 1) {
+        df$mass_c_cmtv[i] <- df$mass_c_g[i]
+      } else {
+        df$mass_c_cmtv[i] <- df$mass_c_g[i] + df$mass_c_cmtv[i - 1] 
+      }
+    }
+    return(df)
+  })
+})
+
+# add additional 0 measurement for step plot
+sra.frc.mss.C.01.ls3 <- lapply(sra.frc.mss.C.01.ls2, function(ls)
+  bind_rows(lapply(ls, function(df) {
+    x <- df[which(df$lyr_bot == min(df$lyr_bot)), ]
+    x$lyr_bot <- 0
+    rbind(x, df)
+  }))
+)
+
+# bind rows of sublist
+sra.frc.mss.C.01.ls4 <- lapply(sra.frc.mss.C.01.ls2, function(ls) bind_rows(ls))
+
+# add measured data to df12 and plot
+p.ls <- lapply(seq_along(ls12), function(i) {
+  frc <- ls12[[i]][["frc"]]
+  ls12[[i]] %>%
+    mutate(PM = substr(PMeco, 1, 2),
+           ECO = substr(PMeco, 3, 4)) %>%
+    ggplot(., aes(lyr_soc, middepth, color = PM)) +
+    geom_step(data = sra.frc.mss.C.01.ls3[[i]],
+              aes(mass_c_cmtv, lyr_bot)) +
+    geom_path(aes(linetype = id)) +
+    geom_point(data = sra.frc.mss.C.01.ls4[[i]],
+               aes(mass_c_cmtv, middepth)) +
+    scale_color_manual(values = c("AN" = andesite,
+                                  "BS" = basalt,
+                                  "GR" = granite)) +      
+    scale_y_reverse() +
+    facet_grid(cols = vars(PM), rows = vars(ECO)) +
+    ggtitle(frc) +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+})
+
+# plot
+p.ls
+```
+
+```{r combine-fpom-opom}
+# combine fPOM and oPOM for "POM" fraction
+soc.2001.POM.sp.df <- bind_rows(mapply(
+  merge,
+  soc.2001.frcSOC.sp.df$FPOM,
+  soc.2001.frcSOC.sp.df$OPOM,
+  MoreArgs = list(by = "lyr_bot", suffixes = c("_fPOM", "_oPOM")),
+  SIMPLIFY = FALSE), .id = "PMeco")
+soc.2001.POM.sp.df$soc_POM <- rowSums(
+  soc.2001.POM.sp.df[ , c("lyr_soc_fPOM", "lyr_soc_oPOM")])
+pom.c.01.df <- pivot_longer(
+  soc.2001.POM.sp.df, 
+  cols = starts_with("lyr_soc"),
+  names_to = "frc",
+  names_prefix = "lyr_soc_",
+  values_to = "soc_frc")
+pom.c.01.df$c_POM_frc <- pom.c.01.df$soc_frc / pom.c.01.df$soc_POM
+```
+
+### Spline 14C
+
 ```{r spline-14C-frc}
 # run mpspline on fraction modern data for '01, '09
 dens.01.09.df <- dens.01.09.19.df[which(dens.01.09.19.df$year != 2019), ]
+dens.01.09.df$frc <- factor(dens.01.09.df$frc, levels = c("fPOM", "oPOM", "minC"))
 dens.01.09.ls.sp <- lapply(
   split(dens.01.09.df, dens.01.09.df$frc), function(df) {
     lapply(split(df, df$pro_name), function(x) {
@@ -848,7 +1265,7 @@ frc.fm.sp.plot.fx <- function(fm.sp.ls) {
     p <- bind_rows(lapply(seq_along(ls), function(i) {
       if (!is.null(ls[[i]])) {
         df <- data.frame(t(do.call(rbind, list(ls[[i]][[1]], ls[[i]][[4]]))))
-        df$lyr_bot <- seq(1, length(df[ , 1]))
+        df$middepth <- seq(1, length(df[ , 1]))
         df$PM <- substr(df[ , 1], 1, 2)
         df$ECO <- substr(df[ , 1], 3, 4)
         df$Year <- ifelse(substr(df[ , 1], 6, 9) == "2010", "2009",
@@ -858,7 +1275,7 @@ frc.fm.sp.plot.fx <- function(fm.sp.ls) {
         return(df[ , -1])
       }
     })) %>%
-    ggplot(., aes(fm, lyr_bot, color = PM, linetype = Year)) +
+    ggplot(., aes(fm, middepth, color = PM, linetype = Year)) +
     geom_path() +
     scale_color_manual(name = NULL,
                        values = c("AN" = andesite,
@@ -877,22 +1294,22 @@ frc.fm.sp.plot.fx <- function(fm.sp.ls) {
 dens.01.09.ls.sp.p <- frc.fm.sp.plot.fx(dens.01.09.ls.sp)
 ```
 
-### C-weighted splines
+### C-weighted 14C spline
 
 ```{r cwt-14c}
 # fractions
 cwt.frc.fx <- function(soc.ls) {
   lapply(soc.ls, function(pro_ls) {
-    cwt.ls <- lapply(pro_ls, function(soc) {
+    lapply(pro_ls, function(soc) {
       d <- seq(10, 30, 10)
       c <- vector(mode = "list", length = length(d))
       for(j in seq_along(d)) {
         if(j == 1) {
           # first depth increment
-          c[[j]] <- soc[1:d[j]]
+          c[[j]] <- soc[1:d[j], "lyr_soc"]
         } else {
           # following depth increments
-          c[[j]] <- soc[(d[j-1]+1):d[j]] 
+          c[[j]] <- soc[(d[j-1]+1):d[j], "lyr_soc"] 
         }
       }
       return(unlist(lapply(c, function(x) x / sum(x, na.rm = TRUE))))
@@ -911,31 +1328,25 @@ cwt.19.01.frc <- cwt.frc.fx(soc.2001.frcSOC.sp)
 # 2001
 fm.wtd.19.01 <- lapply(seq_along(dens.01.09.ls.sp), function(i) {
   
-  # filter null sites
-  ls <- Filter(Negate(is.null), 
-               dens.01.09.ls.sp[[i]][grepl("2001", names(dens.01.09.ls.sp[[i]]))])
-  
-  # check that cwt list and fm lists are equal in length
-  if (length(ls) == length(cwt.19.01.frc[[i]])) {
-    fm.ls <- lapply(seq_along(cwt.19.01.frc[[i]]), function(j) {
+  # run fx on non-null elements
+  fm.ls <- lapply(seq_along(cwt.19.01.frc[[i]]), function(j) {
       
-      # cbind cwts, fm
-      df <- data.frame(cwt = cwt.19.01.frc[[i]][[j]],
-                       fm = ls[[j]][["var.1cm"]])
+      if (!is.null(dens.01.09.ls.sp[[i]][[j]])) {
+        # cbind cwts, fm
+        df <- data.frame(cwt = cwt.19.01.frc[[i]][[j]],
+                         fm = dens.01.09.ls.sp[[i]][[j]][["var.1cm"]])
       
-      # calculate wtd fm
-      df$fm_wt <- df$fm * df$cwt
-      
-      # summarize for target intervals
-      df.sum <- data.frame(
-        lyr_bot = c(10, 20, 30),
-        fm = c(
-          sum(df[1:10, "fm_wt"]), 
-          sum(df[11:20, "fm_wt"]), 
-          sum(df[21:30, "fm_wt"]))) 
-    
-      # return
-      return(df.sum)
+        # calculate wtd fm
+        df$fm_wt <- df$fm * df$cwt
+        
+        # summarize for target intervals
+        data.frame(
+          lyr_bot = c(10, 20, 30),
+          fm = c(
+            sum(df[1:10, "fm_wt"]), 
+            sum(df[11:20, "fm_wt"]), 
+            sum(df[21:30, "fm_wt"]))) 
+      }
     })
     
     # restore names
@@ -943,7 +1354,6 @@ fm.wtd.19.01 <- lapply(seq_along(dens.01.09.ls.sp), function(i) {
     
     # return wtd fm list
     return(fm.ls)
-  }
 })
 names(fm.wtd.19.01) <- names(cwt.19.01.frc)
 ```
@@ -966,11 +1376,18 @@ dens.01.df <- bind_rows(
                       labels = c("fPOM", "oPOM", "minC"))) %>%
   rename(F14C = fm)
 
-# combine '01, '19 data
+# combine '01, '19 data; rm NA
 dens.01.19.df <- rbind(
   dens.01.df,
   dens.01.09.19.df[dens.01.09.19.df$year == 2019, 
-                   names(dens.01.09.19.df) %in% names(dens.01.df)])
+                   names(dens.01.09.19.df) %in% names(dens.01.df)]) %>%
+  filter(!is.na(frc_14c))
+
+# add PMeco_depth col
+dens.01.19.df$PMeco_depth <- paste0(dens.01.19.df$PMeco, "_", dens.01.19.df$lyr_bot - 10, "-", dens.01.19.df$lyr_bot)
+
+# save
+save(dens.01.19.df, file = "dens.01.19.df.RData")
 
 # plot fc
 plot.d14c.ts.fx <- function(df, compare_var) {
@@ -989,9 +1406,7 @@ plot.d14c.ts.fx <- function(df, compare_var) {
   
   # split by depth and plot
   lapply(split(df, df$lyr_bot), function(x) {
-    x %>%
-      filter(frc != "minC") %>%
-    ggplot(., aes(year, frc_14c, color = !! quo_var)) +
+    ggplot(x, aes(year, frc_14c, color = !! quo_var)) +
     geom_line(data = atm.14c, aes(year, d14c), linetype = 3, color = "gray") +
     geom_line() +
     geom_point(aes(shape = eco), size = 2) +
@@ -1008,329 +1423,232 @@ plot.d14c.ts.fx <- function(df, compare_var) {
 }
 ```
 
+### 14C time series
+
 ```{r plot-cwt-14c}
 # plot
 plot.d14c.ts.fx(dens.01.19.df, "pm")
 plot.d14c.ts.fx(dens.01.19.df, "eco")
 ```
 
+### Char pool calc
+
+```{r pom-minC-14c}
+# Koarashi char equation
+char.fx <- function(pom_14c) {
+  (pom_14c - 149.9) / -7.278 
+}
+
+# make df of pom + minC, calculate char C using Koarashi data
+pom.c.14c.01.df <- merge(
+  pom.c.01.df,
+  dens.01.19.df %>%
+    filter(year == 2001),
+  by = c("PMeco", "frc", "lyr_bot")) %>%
+  mutate(wtd_14c = c_POM_frc * frc_14c) %>%
+  group_by(PMeco, pm, eco, lyr_bot, soc_POM, year) %>%
+  summarize(pom_14c = sum(wtd_14c))
+pom.c.14c.01.df <- pom.c.14c.01.df %>%
+  mutate(c_pct_char = char.fx(pom_14c),
+         soc_char = c_pct_char * soc_POM * 10^-2,
+         soc_nonChar = soc_POM - soc_char,
+         d14c_char = -577.9,
+         d14c_nonChar = (pom_14c - d14c_char * c_pct_char) / (100 - c_pct_char))
+ggplot(pom.c.14c.01.df, aes(eco, d14c_nonChar, fill = pm)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(lyr_bot)) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+# # calc. char for oPOM only
+# opom.c.14c.01.df <- merge(
+#   bind_rows(soc.2001.frcSOC.sp.df$OPOM, .id = "PMeco") %>%
+#     mutate(frc = "oPOM"),
+#   dens.01.19.df %>%
+#     filter(year == 2001),
+#   by = c("PMeco", "frc", "lyr_bot")) %>%
+#   mutate(c_pct_char = char.fx(frc_14c),
+#          soc_char = c_pct_char * lyr_soc * 10^-2,
+#          soc_nonChar = lyr_soc - soc_char,
+#          d14c_char = -577.9,
+#          d14c_nonChar = (frc_14c - d14c_char * c_pct_char) / (100 - c_pct_char))
+# ggplot(opom.c.14c.01.df, aes(eco, c_pct_char, fill = pm)) +
+#   geom_col(position = "dodge") +
+#   scale_fill_manual(values = c("andesite" = andesite,
+#                                "basalt" = basalt,
+#                                "granite" = granite)) +
+#   facet_grid(rows = vars(lyr_bot)) +
+#   theme_bw() +
+#   theme(panel.grid = element_blank())
+```
+
+### Free light vs respired 14C
+
 ```{r plot-LF-inc}
 # load data
 load("/Users/jeff/sra-ts/source/sra.all.min.RData")
-
-# long df
-dens.blk.inc.min <- merge(
-  sra.19.01.inc.df %>% mutate(Year = as.character(year)),
-  dens.df, by = c("PM", "ECO", "PMeco", "Year", "lyr_bot"))
+load("/Users/jeff/sra-ts/source/sra.inc.all.RData") # raw
+load("/Users/jeff/sra-ts/source/sra.19.01.inc.RData") # splined
 
 # convert dens.df to wide
-dens.01.19.df.w <- dens.01.19.df %>%
-  filter(frc != "minC") %>%
-  select(PMeco, year, frc, lyr_bot, frc_14c) %>%
+dens.01.19.df.w <- dens.01.09.19.df %>%
+  select(PMeco, Year, frc, lyr_bot, frc_14c) %>%
   pivot_wider(names_from = frc, values_from = frc_14c)
 dens.inc.min.w <- merge(
-  sra.19.01.inc.df,
-  dens.01.19.df.w)
+  sra.inc.all,
+  dens.01.19.df.w %>%
+    mutate(pm = ifelse(grepl("AN", PMeco), "andesite", 
+                       ifelse(grepl("BS", PMeco), "basalt", "granite")),
+           eco = ifelse(grepl("pp", PMeco), "warm", 
+                        ifelse(grepl("wf", PMeco), "cool", "cold"))))
+
+# add depth index col
+dens.inc.min.w <- bind_rows(
+  lapply(split(dens.inc.min.w, dens.inc.min.w$Year), function(x) {
+    bind_rows(lapply(split(x, x$PMeco), function(y) {
+      if (is.null(y$depth)) {
+       y[order(y$lyr_bot), ] %>%
+        mutate(depth = seq(1, nrow(y))) 
+      }
+    }))
+  }))
+
 
 # plot inc v LF
 # plot profiles by year and fraction type
 dens.inc.min.w %>%
-  filter(d14c > -70) %>%
-  ggplot(., aes(d14c, fPOM, color = PM, shape = ECO)) +
+  filter(d14c_mean > -70) %>%
+  ggplot(., aes(d14c_mean, fPOM, color = pm, shape = eco)) +
   geom_vline(xintercept = 0, color = "lightgray") +
   geom_hline(yintercept = 0, color = "lightgray") +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
   geom_point(size = 3) +
-  geom_errorbarh(aes(xmax = d14c_max, xmin = d14c_min), height = 1) +
+  geom_errorbarh(aes(xmax = d14c_u, xmin = d14c_l), height = 1) +
   scale_color_manual(name = "Parent material",
-                     values = c("AN" = andesite,
-                                "BS" = basalt,
-                                "GR" = granite)) +
+                     values = c("andesite" = andesite,
+                                "basalt" = basalt,
+                                "granite" = granite)) +
   scale_shape_manual(name = "Climate",
-                     values = c("pp" = 15,
-                                "wf" = 17,
-                                "rf" = 16)) +
+                     values = c("warm" = 15,
+                                "cool" = 17,
+                                "cold" = 16)) +
   # coord_cartesian(xlim = c(-120, 110), ylim = c(-120, 110)) +
+  facet_grid(cols = vars(depth), rows = vars(Year)) + 
+  xlab(expression(Delta*''^14*'C-CO'[2]*' (‰)')) +
+  ylab(expression('free light '*Delta*''^14*'C (‰)')) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1)
+
+# plot respired against nonChar; splined data; '01 only
+dens.inc.nonChar.df <- merge(
+  pom.c.14c.01.df[ , c("PMeco", "pm", "eco", "lyr_bot", "year", "d14c_nonChar")],
+  sra.19.01.inc[ , which(!(names(sra.19.01.inc) %in% c("PM", "ECO")))])
+  
+dens.inc.nonChar.df %>%
+  filter(d14c > -70) %>%
+  ggplot(., aes(d14c, d14c_nonChar, color = pm)) +
+  geom_vline(xintercept = 0, color = "lightgray") +
+  geom_hline(yintercept = 0, color = "lightgray") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_point(aes(shape = eco), size = 3) +
+  geom_errorbarh(aes(xmin = d14c_min, xmax = d14c_max)) +
+  scale_color_manual(name = "Parent material",
+                     values = c("andesite" = andesite,
+                                "basalt" = basalt,
+                                "granite" = granite)) +
+  scale_shape_manual(name = "Climate",
+                     values = c("warm" = 15,
+                                "cool" = 17,
+                                "cold" = 16)) +
   facet_grid(cols = vars(lyr_bot)) + 
+  xlab(expression(Delta*''^14*'C-CO'[2]*' (‰)')) +
+  ylab(expression('non-char '*Delta*''^14*'C (‰)')) +
   theme_bw() +
   theme(panel.grid = element_blank(),
         aspect.ratio = 1)
 ```
 
-```{r plot-c-n-cn}
-# plot depth profiles
-# plot fx
-frc.pro.plot <- function(df, year, fraction, x) {
-  quo_x <- sym(x)
-  xlab <- ifelse(x == "CN", "CN", paste(x, "(%)"))
-  df$ECO <- factor(df$ECO, levels = c("pp", "wf", "rf"))
-  df <- df[order(df$lyr_bot), ]
-  ggplot(df, aes(!! quo_x, lyr_bot, color = PM, shape = ECO)) +
-    geom_hline(yintercept = 0) +
-    geom_point(size = 3) +
-    geom_path() +
-    scale_y_reverse() +
-    scale_x_continuous() +
-    scale_color_manual(name = "Parent material",
-                       labels = c("AN" = "andesite",
-                                  "BS" = "basalt",
-                                  "GR" = "granite"),
-                       values = c("AN" = andesite, 
-                                  "BS" = basalt, 
-                                  "GR" = granite)) +
-    scale_shape_manual(name = "Climate",
-                       labels = c("pp" = "warm",
-                                  "rf" = "cold",
-                                  "wf" = "cool"),
-                       values = c("pp" = 15, 
-                                  "rf" = 16, 
-                                  "wf" = 17)) +
-    xlab(xlab) +
-    ylab("Depth (cm)") +
-    ggtitle(paste(year, fraction)) +
-    theme_bw() +
-    theme(panel.grid.minor = element_blank())
-}
+## Thermal fractions
+### C release (thermograms)
+```{r thermal-data}
+# load thermogram data and combine
+ANwf.30.HF_tml <- read.csv("../data/external/sra_thml_14C_stoner/smooth_ANwf MOM_RPO.csv")
+BSwf.30.HF_tml <- read.csv("../data/external/sra_thml_14C_stoner/smooth_BSwf 20-30 Frac fix.csv")
+GRwf.30.HF_tml <- read.csv("../data/external/sra_thml_14C_stoner/smooth_GRwf MOM_RPO.csv")
+HF_tml.df <- cbind(rbind(ANwf.30.HF_tml, BSwf.30.HF_tml, GRwf.30.HF_tml), 
+                   site = c(rep("ANwf", nrow(ANwf.30.HF_tml)), 
+                            rep("BSwf", nrow(BSwf.30.HF_tml)), 
+                            rep("GRwf", nrow(GRwf.30.HF_tml))))
+HF_tml.df$PM <- substr(HF_tml.df$site, 1, 2)
 
-# Combine profiles for plotting
-frc.C.01.plot.ls <- lapply(sra.frc.2001.ls, bind_rows, .id = "fraction")
-lapply(seq_along(frc.C.01.plot.ls), function(i) {
-  frc.pro.plot(frc.C.01.plot.ls[[i]], 2001, names(frc.C.01.plot.ls)[i], "C")
-})
-
-frc.C.19.plot.ls <- lapply(sra.frc.2019.ls, bind_rows, .id = "fraction")
-lapply(seq_along(frc.C.19.plot.ls), function(i) {
-  frc.pro.plot(frc.C.19.plot.ls[[i]], 2019, names(frc.C.19.plot.ls)[i], "C")
-})
-
-# Calculate and plot CN
-lapply(seq_along(frc.C.01.plot.ls), function(i) {
-  frc.C.01.plot.ls[[i]][["CN"]] <- frc.C.01.plot.ls[[i]][["C"]] / frc.C.01.plot.ls[[i]][["N"]]
-  frc.pro.plot(frc.C.01.plot.ls[[i]], 2001, names(frc.C.01.plot.ls)[i], "CN")
-})
-lapply(seq_along(frc.C.19.plot.ls), function(i) {
-  frc.C.19.plot.ls[[i]][["CN"]] <- frc.C.19.plot.ls[[i]][["C"]] / frc.C.19.plot.ls[[i]][["N"]]
-  frc.pro.plot(frc.C.19.plot.ls[[i]], 2019, names(frc.C.19.plot.ls)[i], "CN")
-})
-```
-
-```{r plot-frc-mass-losses}
-# calc loss, drop samples without all weights
-sra.frc.mss.lss.df <- sra.frc.mss.wide.df
-sra.frc.mss.lss.df$sum <- rowSums(sra.frc.mss.lss.df[ , c("fPOM", "oPOM", "HF")])
-sra.frc.mss.lss.df$loss <- sra.frc.mss.lss.df$wt_g - sra.frc.mss.lss.df$sum
-sra.frc.mss.lss.df$loss_pct <- (sra.frc.mss.lss.df$loss / sra.frc.mss.lss.df$wt_g) * 100
-  
-# summarize losses by PM, ECO
-sra.frc.mss.lss.df$PM <- substr(sra.frc.mss.lss.df$Probe, 1, 2)
-sra.frc.mss.lss.df$ECO <- factor(substr(sra.frc.mss.lss.df$Probe, 3, 4), 
-                                 levels = c("pp", "wf", "rf"))
-sra.frc.mss.lss.df$year <- as.numeric(substr(sra.frc.mss.lss.df$Probe, 11, 14))
-sra.frc.mss.lss.df$depth <- sapply(
-  strsplit(sra.frc.mss.lss.df$Probe, "_(?!.*_)", perl = TRUE), 
-  "[[", 2)
-sra.frc.mss.lss.df$lyr_bot <- as.numeric(ifelse(nchar(sra.frc.mss.lss.df$depth) == 3, substr(sra.frc.mss.lss.df$depth, 3, 3), ifelse(nchar(sra.frc.mss.lss.df$depth) == 4, substr(sra.frc.mss.lss.df$depth, 3, 4), substr(sra.frc.mss.lss.df$depth, 4, 5))))
-
-## summarize
-# summary(lm(loss_pct ~ PM + ECO + year + lyr_bot, 
-#            sra.frc.mss.lss.df[-which(sra.frc.mss.lss.df$Probe == "BSpp_comp_2001_18-28"), ]))
-summary(lm(loss_pct ~ PM + ECO, 
-           sra.frc.mss.lss.df[-which(sra.frc.mss.lss.df$Probe == "BSpp_comp_2001_18-28"), ]))
+# temp cuts df
+HF_tml.temps.df <- data.frame(
+  PM = rep(c("AN", "BS", "GR"), ea = 5),
+  cut = rep(1:5, 3),
+  temp = c(140, 245, 340, 390, 495,
+           141.5, 246.5, 290, 364, 484,
+           143, 248, 293, 367, 487)
+)
 
 # plot
-sra.frc.mss.lss.df %>%
-  rename(`Mass loss (%)` = loss_pct) %>%
-  mutate(eco = factor(ifelse(ECO == "pp", "warm",
-                             ifelse(ECO == "wf", "cool", "cold")),
-                      levels = c("warm", "cool", "cold")),
-         pm = ifelse(PM == "AN", "andesite",
-                     ifelse(PM == "BS", "basalt", "granite"))) %>%
-  ggplot(., aes(ECO, `Mass loss (%)`, color = pm, shape = eco)) +
-  geom_hline(yintercept = 0, color = "black") +
-  geom_point(size = 3) +
-  scale_color_manual(values = c("andesite" = andesite,
-                                "basalt" = basalt,
-                                "granite" = granite)) +
-  scale_shape_manual(values = c("warm" = 15,
-                                "cool" = 17,
-                                "cold" = 16)) +
-  facet_grid(cols = vars(year)) +
+ggplot(HF_tml.df, aes(temp, Moving, color = PM)) +
+  # geom_vline(aes(xintercept = temp, color = PM),
+  #            data = HF_tml.temps.df,
+  #            linetype = "dashed", alpha = .5, show.legend = FALSE) +
+  geom_line() +
+  scale_color_manual(values = c("AN" = andesite,
+                                "BS" = basalt,
+                                "GR" = granite)) +
   theme_bw() +
   theme(panel.grid = element_blank())
 ```
 
-Interestingly, it appears that AN soils have proportionally LESS minC by mass than do GR or BS soils, significantly so at depth. Why would this be? Possibly because AN soils have higher losses (DOC) during fractionation?
+### Thermal fraction 14C
 
-```{r calc-frc-C-distr-err}
-# make wide dataframe for 2019 frc data
-merge.vars <- c("year", "PM", "ECO", "lyr_bot")
-sra.frc.2019.df <- merge(
-  merge(bind_rows(sra.frc.2019.ls$FPOM)[, c(merge.vars, "C", "N")],
-        bind_rows(sra.frc.2019.ls$OPOM)[, c(merge.vars, "C", "N")],
-        by = merge.vars, suffixes = c("_fPOM", "_oPOM")),
-  bind_rows(sra.frc.2019.ls$MOM)[, c(merge.vars, "C", "N")], by = merge.vars) %>%
-  rename(C_minC = C, N_minC = N)
-
-# fill missing oPOM data
-sra.frc.mss.wide.fill.df <- sra.frc.mss.lss.df
-sra.frc.mss.wide.fill.df$oPOM <- ifelse(
-  is.na(sra.frc.mss.wide.df$oPOM),
-  sra.frc.mss.wide.df$wt_g - (sra.frc.mss.wide.df$fPOM + sra.frc.mss.wide.df$HF),
-  sra.frc.mss.wide.df$oPOM)
-
-# calculate mass precentages
-sra.frc.mss.wide.fill.df <- sra.frc.mss.wide.fill.df %>%
-  mutate(fPOM_mass_frac = fPOM / wt_g,
-         oPOM_mass_frac = oPOM / wt_g,
-         minC_mass_frac = HF / wt_g,
-         PMeco = paste0(PM, ECO))
-
-# # model
-# summary(lm(fPOM_mass_frac ~ PM + ECO, 
-#            sra.frc.mss.wide.fill.df[sra.frc.mss.wide.fill.df$lyr_bot == 10 & sra.frc.mss.wide.fill.df$year == 2019,]))
-# summary(lm(oPOM_mass_frac ~ PM + ECO, 
-#            sra.frc.mss.wide.fill.df[sra.frc.mss.wide.fill.df$lyr_bot == 10 & sra.frc.mss.wide.fill.df$year == 2019,]))
-# summary(lm(minC_mass_frac ~ PM + ECO, 
-#            sra.frc.mss.wide.fill.df[sra.frc.mss.wide.fill.df$lyr_bot == 10 & sra.frc.mss.wide.fill.df$year == 2019,]))
+```{r tml-14c}
+# wrangle 14C data to df
+frc.14c.df <- bind_rows(ams_results_ls$`ams_jena_results-frc19-MOM-thml_2022-01-20`) %>% 
+  dplyr::slice(1:15) %>%
+  mutate(PM = substr(Probe, 1, 2),
+         ECO = "wf", 
+         thml_frc = as.numeric(substr(Probe, nchar(Probe), nchar(Probe)))) %>%
+  # fix Shane's mislabeling of 14C data
+  mutate(PM = ifelse(PM == "AN", "GR", ifelse(PM == "GR", "AN", PM))) %>%
+  rename(fm = F14C, fm_err = err, d14c = `∆14C.(‰)`, d14c_err = `err.(‰)`) %>%
+  select(PM, ECO, thml_frc, d14c, d14c_err, fm, fm_err)
 
 # plot
-sra.frc.mss.fill.plot.df <- sra.frc.mss.wide.fill.df %>%
-  pivot_longer(cols = contains("mass_frac"), names_to = "Fraction", values_to = "Mass percent") %>%
-  mutate(Fraction = factor(Fraction,
-                           levels = c("fPOM_mass_frac", "oPOM_mass_frac", "minC_mass_frac"),
-                           labels = c("fPOM_mass_frac" = "fPOM",
-                                      "oPOM_mass_frac" = "oPOM", 
-                                      "minC_mass_frac" = "minC")))
-
-# 2019
-sra.frc.mss.fill.plot.df %>%
-  filter(year == 2019) %>%
-  ggplot(., aes(PMeco, `Mass percent`, fill = Fraction)) +
-  geom_hline(yintercept = 1, color = "black") +
-  geom_col() +
-  facet_grid(rows = vars(depth)) +
+ggplot(frc.14c.df, aes(thml_frc, d14c, fill = PM)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("AN" = andesite,
+                               "BS" = basalt,
+                               "GR" = granite)) + 
+  facet_grid(rows = vars(PM)) +
   theme_bw() +
   theme(panel.grid.minor = element_blank())
 
-# 2001 too hard to plot with all depths
-sra.frc.mss.fill.plot.df %>%
-  filter(year == 2001) %>%
-  group_by(PMeco, Fraction) %>%
-  summarize(`Mass percent` = mean(`Mass percent`)) %>%
-  ggplot(., aes(PMeco, `Mass percent`, fill = Fraction)) +
-  geom_hline(yintercept = 1, color = "black") +
-  geom_col() +
+# step plot
+frc.14c.df %>%
+  filter(thml_frc == 5) %>%
+  mutate(thml_frc = 6) %>%
+  rbind(frc.14c.df, .) %>%
+  ggplot(., aes(thml_frc, d14c, color = PM)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_step() +
+  scale_color_manual(name = NULL,
+                     values = c("AN" = andesite,
+                                "BS" = basalt,
+                                "GR" = granite),
+                     labels = c("AN" = "andesite",
+                                "BS" = "basalt",
+                                "GR" = "granite")) +
+  scale_x_continuous(breaks = seq(1.5, 5.5), labels = as.character(seq(1, 5))) +
+  ylab(expression(Delta*''^14*'C (‰)')) +
+  xlab("Thermal fraction") +
   theme_bw() +
-  theme(panel.grid.minor = element_blank())
-
-# add lyr_C
-load("/Users/jeff/sra-ts/source/sra.2001.ls.RData")
-load("/Users/jeff/sra-ts/source/sra.2019.ls.RData")
-
-# make df from list objects
-sra.soc.2019.df <- bind_rows(sra.2019.ls) %>%
-  filter(lyr_bot < 31) %>%
-  select(PM, ECO, lyr_bot, Year, lyr_soc, C, mass_kgm2) %>%
-  group_by(PM, ECO, lyr_bot, Year) %>%
-  summarize(across(.cols = c(lyr_soc, C, mass_kgm2), .fns = mean), .groups = "drop") %>%
-  rename(year = Year, c_pct_lyr = C)
-sra.soc.2001.df <- bind_rows(sra.2001.ls) %>%
-  select(PM, ECO, lyr_bot, lyr_soc_kgm2, C., bd.g.cm3, fine.earth.) %>%
-  group_by(PM, ECO, lyr_bot) %>%
-  summarize(across(.cols = c(lyr_soc_kgm2, C., bd.g.cm3, fine.earth.), .fns = mean), .groups = "drop") %>%
-  rename(c_pct_lyr = C.,
-         lyr_soc = lyr_soc_kgm2,
-         bd = bd.g.cm3,
-         fineEarth = fine.earth.) %>%
-  mutate(year = 2001)
-
-# merge w/ frc lists
-sra.frc.soc.2001.ls <- lapply(lapply(sra.frc.2001.ls, bind_rows), function(df) {
-  merge(df, sra.soc.2001.df, by = c("PM", "ECO", "year", "lyr_bot")) %>%
-    select(-"ID")
-})
-sra.frc.soc.2001.ls$MOM <- sra.frc.soc.2001.ls$MOM %>%
-  mutate(C = NA, N = NA)
-sra.frc.soc.2019.ls <- lapply(lapply(sra.frc.2019.ls, bind_rows), function(df) {
-  merge(df, sra.soc.2019.df, by = c("PM", "ECO", "year", "lyr_bot")) %>%
-    select(-"ID")
-})
-# add fineEarth to 2019 data
-sra.frc.soc.01.19.ls <- lapply(seq_along(sra.frc.soc.2019.ls), function(i) {
-  rbind(sra.frc.soc.2019.ls[[i]], sra.frc.soc.2001.ls[[i]])
-})
-names(sra.frc.soc.01.19.ls) <- names(sra.frc.soc.2019.ls)
-
-# merge mass frc
-sra.frc.mss.fill.long.ls <- split(sra.frc.mss.fill.plot.df, sra.frc.mss.fill.plot.df$Fraction)
-sra.frc.mss.fill.long.ls <- lapply(sra.frc.mss.fill.long.ls, function(df) {
-  df[ , c("PM", "ECO", "year", "lyr_bot", "Mass percent")]
-})
-sra.frc.soc.ls <- mapply(
-  merge,
-  sra.frc.soc.01.19.ls,
-  sra.frc.mss.fill.long.ls,
-  SIMPLIFY = FALSE)
-
-# Calculate C pct of layer, absolute C, stock per fraction
-sra.frc.soc.df <- bind_rows(sra.frc.soc.ls, .id = "Fraction")
-sra.frc.soc.df$frc_C_lyr <- sra.frc.soc.df$C * 10^-2 * sra.frc.soc.df$`Mass percent`
-sra.frc.soc.wide.df <- pivot_wider(
-  sra.frc.soc.df, 
-  id_cols = c("year", "PM", "ECO", "lyr_bot", "lyr_soc", "c_pct_lyr", "bd"), 
-  names_from = c("Fraction"), values_from = c("frc_C_lyr", "C", "Mass percent")) %>%
-  merge(., sra.frc.mss.wide.fill.df[ , c("PM", "ECO", "lyr_bot", "year", "wt_g")])
-
-# sum gC frc
-sra.frc.soc.wide.df$c_pct_lyr_frc <- rowSums(sra.frc.soc.wide.df[, c("frc_C_lyr_FPOM", "frc_C_lyr_OPOM", "frc_C_lyr_MOM")]) * 100
-sra.frc.soc.wide.df$C_LOST <- sra.frc.soc.wide.df$c_pct_lyr - sra.frc.soc.wide.df$c_pct_lyr_frc
-sra.frc.soc.wide.df$soc_lost <- sra.frc.soc.wide.df$C_LOST * sra.frc.soc.wide.df$bd
-sra.frc.soc.wide.df$pctSOC_lost <- sra.frc.soc.wide.df$soc_lost / sra.frc.soc.wide.df$lyr_soc
-```
-
-```{r plot-c-loss}
-# 2001
-# sra.frc.soc.wide.df %>%
-#   filter(year == 2001) %>%
-#   mutate(PMeco = paste0(PM, ECO)) %>%
-#   ggplot(., aes(PMeco, soc_lost)) +
-#   geom_col() +
-#   facet_grid(rows = vars(lyr_bot)) +
-#   theme_bw() +
-#   theme(panel.grid.minor = element_blank())
-
-# 2019
-sra.frc.soc.wide.df %>%
-  filter(year == 2019) %>%
-  mutate(Site = factor(paste0(PM, ECO), 
-                       levels = c("ANpp", "ANwf", "ANrf", 
-                                  "BSpp", "BSwf", "BSrf", 
-                                  "GRpp", "GRwf", "GRrf")),
-         `C lost (% of total stock)` = pctSOC_lost * 100) %>%
-  ggplot(., aes(Site, `C lost (% of total stock)`)) +
-  geom_col() +
-  facet_grid(rows = vars(lyr_bot)) +
-  theme_bw() +
-  theme(panel.grid.minor = element_blank())
-```
-
-```{r thermal-data}
-# load thermogram data and combine
-ANwf.20.HF_tml <- read.csv("../data/external/sra_thml_14C_stoner/smooth_ANwf MOM_RPO.csv")
-GRwf.20.HF_tml <- read.csv("../data/external/sra_thml_14C_stoner/smooth_GRwf MOM_RPO.csv")
-HF_tml.df <- cbind(rbind(ANwf.20.HF_tml, GRwf.20.HF_tml), 
-                   site = c(rep("ANwf", nrow(ANwf.20.HF_tml)), rep("GRwf", nrow(GRwf.20.HF_tml))))
-HF_tml.df$PM <- substr(HF_tml.df$site, 1, 2)
-
-# plot
-ggplot(HF_tml.df, aes(temp, CO2_scaled, color = PM)) +
-  # geom_vline(xintercept = 250, color = "red", linetype = "dashed") +
-  # geom_vline(xintercept = 370, color = "red", linetype = "dashed") +
-  # geom_vline(xintercept = 370, color = "red", linetype = "dashed") +
-  # geom_vline(xintercept = 500, color = "red", linetype = "dashed") +
-  geom_line() +
-  scale_color_manual(values = c("AN" = andesite,
-                                "GR" = granite)) +
-  theme_bw() +
-  theme(panel.grid.minor = element_blank())
+  theme(panel.grid = element_blank())
 ```
