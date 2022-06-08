@@ -3,14 +3,14 @@ title: "Sierra Nevada Fraction Analysis"
 author: J. Beem-Miller
 date: \textit{\today}
 output:
-  pdf_document:
-    latex_engine: xelatex
-    toc: yes
-    toc_depth: 3
   html_document:
     df_print: paged
     toc: yes
     toc_depth: '2'
+  pdf_document:
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
   html_notebook:
     css: "custom.css"
     toc: yes
@@ -395,7 +395,7 @@ sra.09.lyr.df <- sra.09.israd$Rasmussen_2018$layer
 # get frc data
 sra.09.frc.df <- merge(
   sra.09.israd$Rasmussen_2018$fraction,
-  sra.09.israd$Rasmussen_2018$layer[, c("pro_name", "lyr_name", "lyr_bot", "lyr_top", "lyr_c_org", "lyr_n_tot", "lyr_soc", "lyr_obs_date_y")], by = c("pro_name", "lyr_name"))
+  sra.09.israd$Rasmussen_2018$layer[, c("pro_name", "lyr_name", "lyr_bot", "lyr_top", "lyr_c_org", "lyr_n_tot", "lyr_soc", "lyr_bd_samp", "lyr_obs_date_y")], by = c("pro_name", "lyr_name"))
 
 ## fill missing d14c data
 ix <- which(is.na(sra.09.frc.df$frc_14c) & !is.na(sra.09.frc.df$frc_fraction_modern))
@@ -412,7 +412,7 @@ sra.frc.14c <- sra.09.frc.df %>%
          frc = ifelse(frc_property == "free light", "fPOM", 
                       ifelse(frc_property == "heavy", "minC", "oPOM")),
          Year = 2009) %>% # note that GR samples were technically collected in 2010...
-  select(frc_fraction_modern, frc_fraction_modern_sigma, frc_14c, frc_14c_sigma, frc, PMeco, PM, ECO, Year, pro_name, lyr_top, lyr_bot) %>% 
+  select(frc_fraction_modern, frc_fraction_modern_sigma, frc_14c, frc_14c_sigma, frc, PMeco, PM, ECO, Year, pro_name, lyr_top, lyr_bot, lyr_bd_samp) %>% 
   rename(F14C = frc_fraction_modern,
          err = frc_fraction_modern_sigma,
          frc_14c_err = frc_14c_sigma) 
@@ -538,12 +538,9 @@ soc.2001.sum.df <- bind_rows(soc.2001.ls) %>%
 ```{r c-data-2009}
 # calculate cumulative soc stocks for '09 data
 sra.09.lyr.C <- unsplit(lapply(
-  split(soc.09.blkC.df, soc.09.blkC.df$pro_name), function(x) {
-    names(x)[which(names(x) == "bottom.mineral")] <- "lyr_bot"
-    x$ECO <- tolower(x$Biome)
-    x$PMeco <- paste0(x$PM, x$ECO)
+  split(sra.09.frc.df, sra.09.frc.df$pro_name), function(x) {
     x <- x[order(x$lyr_bot), ] # make sure to order data
-    x$lyr_soc_kgm2 <- x$BD_g_cm_3 * x$Thickness_cm * x$Soil_finefraction * .1 * x$C_pct
+    x$lyr_soc_kgm2 <- x$lyr_soc * 10
     x$lyr_soc_cmtv <- NA
     for(i in seq_along(x$lyr_bot)) {
       if(i == 1) {
@@ -553,7 +550,14 @@ sra.09.lyr.C <- unsplit(lapply(
       }
     }
     return(x)
-  }), soc.09.blkC.df$pro_name)
+  }), sra.09.frc.df$pro_name) %>%
+  rename(PMeco = pro_name,
+         frc_c_pct = frc_c_perc) %>%
+  mutate(frc = ifelse(frc_property == "free light", "FPOM", 
+                      ifelse(frc_property == "heavy", "MOM", "OPOM")),
+         PM = substr(PMeco, 1, 2),
+         ECO = factor(substr(PMeco, 3, 4), levels = c("pp", "wf", "rf")),
+         mass_c_g = lyr_soc_kgm2 * frc_c_pct * 10^-2)
 ```
 
 ### 2019
@@ -668,11 +672,7 @@ sra.frc.mss.C.01.df <- data.frame(sra.frc.mss.C.01.df)
 sra.frc.mss.C.01.df$middepth <- sra.frc.mss.C.01.df$lyr_top +
   (sra.frc.mss.C.01.df$lyr_bot - sra.frc.mss.C.01.df$lyr_top) / 2
 
-# '09
-# sra.09.frc.C$frc_c_perc
-
-
-# '19
+## '19
 sra.frc.mss.C.19.df <- merge(
   bind_rows(
     lapply(sra.frc.2019.ls, function(ls) bind_rows(ls, .id = "PMeco")), .id = "frc"),
@@ -747,10 +747,51 @@ frc_c_pct.plot.fx(sra.frc.mss.C.01.prep.fx(sra.frc.mss.C.01.df),
                   fill_var = "ECO")
 ```
 
+```{r plot-frcC-pct-09}
+# 2009
+frc_c_pct.plot.fx(sra.frc.mss.C.01.prep.fx(sra.09.lyr.C), "PM")
+frc_c_pct.plot.fx(sra.frc.mss.C.01.prep.fx(sra.09.lyr.C), "ECO")
+```
+
 ```{r plot-frcC-pct-19}
 # 2019
 frc_c_pct.plot.fx(sra.frc.mss.C.19.df, "PM")
 frc_c_pct.plot.fx(sra.frc.mss.C.19.df, "ECO")
+```
+
+```{r c-dist-pm-eco}
+sra.frc.mss.C.19.df %>%
+  mutate(c_mass_wt = mass_c_g / sum(mass_c_g),
+         eco = factor(ifelse(ECO == "pp", "WARM",
+                             ifelse(ECO == "wf", "COOL", "COLD")),
+                      levels = c("WARM", "COOL", "COLD")),
+         pm = ifelse(PM == "AN", "andesite",
+                     ifelse(PM == "BS", "basalt", "granite"))) %>%
+  group_by(pm, eco, frc) %>%
+  summarize(frc_c_pct_30 = round(weighted.mean(frc_c_pct, c_mass_wt) * 100, 0),
+            .groups = "drop") %>%
+  mutate(frc = factor(frc, levels = c("FPOM", "MOM", "OPOM"),
+                      labels = c("free light", "heavy", "occluded light"))) %>%
+  ggplot(., aes(pm, frc_c_pct_30)) +
+  geom_col(aes(fill = pm), position = "dodge") +
+  scale_fill_manual(name = NULL,
+                    values = c("andesite" = andesite, 
+                               "basalt" = basalt, 
+                               "granite" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(frc)) +
+  ylab("C partitioning (%)") +
+  xlab(NULL) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", size = 12),
+        strip.text.y = element_text(face = "bold", angle = 0, size = 12),
+        strip.background = element_rect(fill = "white", color = "white"),
+        legend.position = "bottom",
+        legend.text = element_text(size = 12)) 
 ```
 
 ```{r calc-frc-C-distr-err}
@@ -929,7 +970,10 @@ dens.df <- bind_rows(
   filter(!is.na(frc_14c))
 
 # add '09 data
-dens.01.09.19.df <- rbind(dens.df, sra.frc.14c) %>%
+dens.01.09.19.df <- rbind(
+  dens.df, 
+  sra.frc.14c %>%
+    select(-lyr_bd_samp)) %>%
   mutate(pm = ifelse(PM == "AN", "andesite", 
                      ifelse(PM == "BS", "basalt", "granite")),
          eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
@@ -983,6 +1027,39 @@ dens.pro.p.fx <- function(df, year, leg.pos = "right") {
     theme(panel.grid = element_blank(),
           legend.position = leg.pos)
 }
+
+# pro plot fx
+dens.pro.p.fx2 <- function(df) {
+  
+  ggplot(df, aes(frc_14c, middepth, color = pm)) +
+    geom_vline(xintercept = 0, linetype = 2) +
+    geom_point(aes(shape = eco), size = 3) +
+    geom_path() +
+    scale_color_manual(name = NULL,
+                       values = c("andesite" = andesite,
+                                  "basalt" = basalt,
+                                  "granite" = granite)) +
+    scale_shape_manual(name = NULL, 
+                       values = c("warm" = 15,
+                                  "cool" = 17,
+                                  "cold" = 16)) +
+    facet_grid(rows = vars(eco), cols = vars(frc2)) +
+    scale_y_reverse(limits = c(30, 0)) +
+    theme_bw() +
+    ylab("Depth (cm)") +
+    xlab(expression('Fraction '*Delta*''^14*' (‰)')) +
+    guides(color = guide_legend(ncol = 3),
+           shape = guide_legend(ncol = 3)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          axis.title = element_text(size = 14),
+          axis.text = element_text(size = 10),
+          strip.text.x = element_text(face = "bold", size = 12),
+          strip.text.y = element_text(face = "bold", angle = 0, size = 12),
+          strip.background = element_rect(fill = "white", color = "white"),
+          legend.position = "bottom",
+          legend.text = element_text(size = 12)) 
+}
 ```
 
 ```{r plot-dens-pros}
@@ -990,6 +1067,13 @@ dens.pro.p.fx <- function(df, year, leg.pos = "right") {
 dens.pro.p.fx(dens.01.09.19.df, 2001)
 dens.pro.p.fx(dens.01.09.19.df, 2019)
 dens.pro.p.fx(dens.01.09.19.df, 2009)
+      
+dens.01.09.19.plot.df <- dens.01.09.19.df %>%
+  filter(lyr_bot < 31) %>%
+  mutate(frc2 = ifelse(frc == "fPOM", "free light", ifelse(frc == "oPOM", "occluded light", "heavy")))
+dens.01.09.19.plot.df <- dens.01.09.19.plot.df[dens.01.09.19.plot.df$frc != "oPOM" & dens.01.09.19.plot.df$year == 2019, ]
+
+dens.pro.p.fx2(dens.01.09.19.plot.df)
 ```
 
 ## Spline '01, '09
@@ -1096,7 +1180,7 @@ SOCspline.fx <- function(frc.df) {
 
 ```{r run-cspline-frc}
 # fraction C stocks
-# soc.2009.frcSOC.sp <- mpspline.frc.fx(sra.frc.mss.C.09.df)
+soc.2009.frcSOC.sp <- mpspline.frc.fx(sra.09.lyr.C)
 soc.2001.frcSOC.sp <- mpspline.frc.fx(sra.frc.mss.C.01.df)
 soc.2001.frcSOC.sp.df <- lapply(soc.2001.frcSOC.sp, function(ls)
   lapply(ls, function(df) {
@@ -1256,6 +1340,10 @@ dens.01.09.ls.sp <- lapply(
       }
     })
   })
+dens.01.09.ls.sp <- lapply(dens.01.09.ls.sp, function(ls) {
+  names(ls) <- ifelse(grepl("2010", names(ls)), sub("2010", "2009", names(ls)), names(ls))
+  return(ls)
+})
 ```
 
 ```{r plot-frc-fm-splines}
@@ -1321,73 +1409,84 @@ cwt.frc.fx <- function(soc.ls) {
 cwt.19.01.frc <- cwt.frc.fx(soc.2001.frcSOC.sp)
 
 # 2009
-# cwt.19.09 <- cwt.frc.fx(soc.2009.frcSOC.sp)
+cwt.19.09.frc <- cwt.frc.fx(soc.2009.frcSOC.sp)
+
+# combine
+cwt.19.01.09.frc <- lapply(seq_along(cwt.19.01.frc), function(i) {
+  ls.01 <- cwt.19.01.frc[[i]]
+  names(ls.01) <- paste0(names(cwt.19.01.frc[[i]]), "_2001")
+  ls.09 <- cwt.19.09.frc[[i]]
+  names(ls.09) <- paste0(names(cwt.19.09.frc[[i]]), "_2009")
+  ls <- c(ls.01, ls.09)
+  ls[order(names(ls))]
+})
+names(cwt.19.01.09.frc) <- names(cwt.19.01.frc)
 
 ## calculate fm_wts
 ## '19 depths
-# 2001
-fm.wtd.19.01 <- lapply(seq_along(dens.01.09.ls.sp), function(i) {
+fm.wtd.19.01.09 <- lapply(seq_along(dens.01.09.ls.sp), function(i) {
   
   # run fx on non-null elements
-  fm.ls <- lapply(seq_along(cwt.19.01.frc[[i]]), function(j) {
-      
-      if (!is.null(dens.01.09.ls.sp[[i]][[j]])) {
-        # cbind cwts, fm
-        df <- data.frame(cwt = cwt.19.01.frc[[i]][[j]],
-                         fm = dens.01.09.ls.sp[[i]][[j]][["var.1cm"]])
-      
-        # calculate wtd fm
-        df$fm_wt <- df$fm * df$cwt
-        
-        # summarize for target intervals
-        data.frame(
-          lyr_bot = c(10, 20, 30),
-          fm = c(
-            sum(df[1:10, "fm_wt"]), 
-            sum(df[11:20, "fm_wt"]), 
-            sum(df[21:30, "fm_wt"]))) 
-      }
-    })
+  fm.ls <- lapply(seq_along(dens.01.09.ls.sp[[i]]), function(j) {
     
-    # restore names
-    names(fm.ls) <- names(cwt.19.01.frc[[i]])
+    if (!is.null(dens.01.09.ls.sp[[i]][[j]])) {
+      
+      # combine cwt, fm
+      df <- data.frame(cwt = cwt.19.01.09.frc[[i]][[j]], 
+                       fm = dens.01.09.ls.sp[[i]][[j]][["var.1cm"]])
+            
+      # calculate wtd fm
+      df$fm_wt <- df$cwt * df$fm
+      
+      # summarize for target intervals
+      data.frame(
+        lyr_bot = c(10, 20, 30),
+        fm = c(
+          sum(df[1:10, "fm_wt"]), 
+          sum(df[11:20, "fm_wt"]), 
+          sum(df[21:30, "fm_wt"]))) 
+    }
+  })
+  
+  # restore names
+  names(fm.ls) <- names(dens.01.09.ls.sp[[i]])
     
-    # return wtd fm list
-    return(fm.ls)
+  # return wtd fm list
+  return(fm.ls)
 })
-names(fm.wtd.19.01) <- names(cwt.19.01.frc)
+names(fm.wtd.19.01.09) <- names(dens.01.09.ls.sp)
 ```
 
 ```{r prep-cwt-14c-plot}
 # make df for splined '01 data
-dens.01.df <- bind_rows(
-  lapply(fm.wtd.19.01, function(ls) bind_rows(ls, .id = "PMeco")), .id = "frc") %>%
-  mutate(pm = ifelse(substr(PMeco, 1, 2) == "AN", "andesite", 
-                     ifelse(substr(PMeco, 1, 2) == "BS", "basalt", "granite")), 
+dens.01.09.df <- bind_rows(
+  lapply(fm.wtd.19.01.09, function(ls) 
+    bind_rows(ls, .id = "PMeco_year")), .id = "frc") %>%
+  mutate(PMeco = substr(PMeco_year, 1, 4),
+         pm = ifelse(substr(PMeco_year, 1, 2) == "AN", "andesite", 
+                     ifelse(substr(PMeco_year, 1, 2) == "BS", "basalt", "granite")), 
          eco = factor(
-           ifelse(substr(PMeco, 3, 4) == "pp", "warm", 
-                  ifelse(substr(PMeco, 3, 4) == "wf", "cool", "cold")),
+           ifelse(substr(PMeco_year, 3, 4) == "pp", "warm", 
+                  ifelse(substr(PMeco_year, 3, 4) == "wf", "cool", "cold")),
            levels = c("warm", "cool", "cold")),
-         year = 2001,
+         year = ifelse(grepl("2001", PMeco_year), 2001, 2009),
          Year = as.character(year),
          frc_14c = convert_fm_d14c(fm = fm, obs_date_y = year, verbose = FALSE),
-         frc = factor(frc, 
-                      levels = c("FPOM", "OPOM", "MOM"), 
-                      labels = c("fPOM", "oPOM", "minC"))) %>%
-  rename(F14C = fm)
+         frc = factor(frc, levels = c("fPOM", "oPOM", "minC"))) %>%
+  rename(F14C = fm) %>%
+  select(-PMeco_year)
 
 # combine '01, '19 data; rm NA
-dens.01.19.df <- rbind(
-  dens.01.df,
-  dens.01.09.19.df[dens.01.09.19.df$year == 2019, 
-                   names(dens.01.09.19.df) %in% names(dens.01.df)]) %>%
+dens.01.09.19.sp.df <- rbind(
+  dens.01.09.df,
+  dens.01.09.19.df[dens.01.09.19.df$year == 2019 & dens.01.09.19.df$lyr_bot < 31, names(dens.01.09.19.df) %in% names(dens.01.09.df)]) %>%
   filter(!is.na(frc_14c))
 
 # add PMeco_depth col
-dens.01.19.df$PMeco_depth <- paste0(dens.01.19.df$PMeco, "_", dens.01.19.df$lyr_bot - 10, "-", dens.01.19.df$lyr_bot)
+dens.01.09.19.sp.df$PMeco_depth <- paste0(substr(dens.01.09.19.sp.df$PMeco, 1, 4), "_", dens.01.09.19.sp.df$lyr_bot - 10, "-", dens.01.09.19.sp.df$lyr_bot)
 
 # save
-save(dens.01.19.df, file = "dens.01.19.df.RData")
+save(dens.01.09.19.sp.df, file = "dens.01.09.19.sp.df.RData")
 
 # plot fc
 plot.d14c.ts.fx <- function(df, compare_var) {
@@ -1406,19 +1505,36 @@ plot.d14c.ts.fx <- function(df, compare_var) {
   
   # split by depth and plot
   lapply(split(df, df$lyr_bot), function(x) {
-    ggplot(x, aes(year, frc_14c, color = !! quo_var)) +
-    geom_line(data = atm.14c, aes(year, d14c), linetype = 3, color = "gray") +
-    geom_line() +
-    geom_point(aes(shape = eco), size = 2) +
+    x %>%
+      filter(frc != "oPOM") %>%
+      mutate(eco = factor(ifelse(eco == "warm", "WARM", ifelse(eco == "cool", "COOL", "COLD")), levels = c("WARM", "COOL", "COLD")),
+        frc = ifelse(frc == "fPOM", "free light", "heavy")) %>%
+    ggplot(., aes(year, frc_14c, color = !! quo_var)) +
+    geom_line(data = atm.14c, aes(year, d14c), 
+              linetype = 3, color = "gray", size = .7) +
+    geom_line(size = 1) +
+    geom_point(aes(shape = eco), size = 3) +
     scale_color_manual(name = NULL, values = cvals) +
     scale_shape_manual(name = NULL,
-                       values = c("warm" = 15,
-                                  "cool" = 17,
-                                  "cold" = 16)) +
-    scale_x_continuous(breaks = c(2001, 2019)) +
+                       values = c("WARM" = 15,
+                                  "COOL" = 17,
+                                  "COLD" = 16),
+                       labels = c("WARM" = "warm",
+                                  "COOL" = "cool",
+                                  "COLD" = "cold")) +
+    scale_x_continuous(breaks = c(2001, 2009, 2019)) +
     facet_grid(rows = vars(frc), cols = vars(!! f_var)) +
+    ylab(expression('Fraction '*Delta*''^14*' (‰)')) +
     theme_bw() +
-    theme(panel.grid = element_blank())
+    theme(panel.grid = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_text(size = 14),
+          axis.text = element_text(size = 10),
+          strip.text.x = element_text(face = "bold", size = 12),
+          strip.text.y = element_text(face = "bold", angle = 0, size = 12),
+          strip.background = element_rect(fill = "white", color = "white"),
+          legend.position = "bottom",
+          legend.text = element_text(size = 12)) 
   })
 }
 ```
@@ -1427,8 +1543,165 @@ plot.d14c.ts.fx <- function(df, compare_var) {
 
 ```{r plot-cwt-14c}
 # plot
-plot.d14c.ts.fx(dens.01.19.df, "pm")
-plot.d14c.ts.fx(dens.01.19.df, "eco")
+plot.d14c.ts.fx(dens.01.09.19.sp.df, "pm")
+plot.d14c.ts.fx(dens.01.09.19.sp.df, "eco")
+```
+
+```{r emmip-plot-fx}
+# linear mods for TS
+mod.fx <- function(frc, lyr_bot) {
+  df <- dens.01.09.19.sp.df[dens.01.09.19.sp.df$frc == frc &
+                              dens.01.09.19.sp.df$lyr_bot == lyr_bot, ]
+  df$year <- df$year - 2000
+  lm(frc_14c ~ year * pm * eco, df)
+}
+mod.ls <- list(
+  ts.mod.10.fPOM = mod.fx("fPOM", 10),
+  ts.mod.10.minC = mod.fx("minC", 10),
+  ts.mod.30.fPOM = mod.fx("fPOM", 30),
+  ts.mod.30.minC = mod.fx("minC", 30)
+)
+
+ emmip.fx <- function(mod, var) {
+   brks <- c(1, 9, 19)
+   if (var == "pm") {
+     emmip(mod, pm ~ year | eco, CIs = TRUE, at = list(year = brks))$data
+   } else {
+     emmip(mod, eco ~ year | pm, CIs = TRUE, at = list(year = brks))$data
+   }
+ }
+
+# return emmip ls
+ts.emmip.ls <- lapply(seq_along(mod.ls), function(i) {
+  emmip.fx(mod.ls[[i]], "pm") %>%
+    mutate(frc = ifelse(i == 1 | 3, "fPOM", "minC"),
+           lyr_bot = ifelse(i < 3, 10, 30))
+})
+
+# plot fn
+plot.fx <- function(ls, data, var) {
+  
+  # set grouping var
+  quo_var <- sym(var)
+  
+  # set color palette & facet var
+  if (var == "pm") {
+    cvals <- c("andesite" = andesite, "basalt" = basalt, "granite" = granite)
+  } else {
+    cvals <- c("warm" = warm, "cool" = cool, "cold" = cold)
+  }
+  
+  # modify point and atm data
+  data <- dens.01.09.19.sp.df %>%
+    filter(frc != "oPOM") %>%
+    mutate(ecoFrc = paste0(eco, " (", frc, ")"),
+           year = year - 2000)
+  atm.14c$frc <- atm.14c$Type
+  
+  # run loop
+  lapply(seq_along(ls), function(i) {
+    
+    # get data
+    data <- data[which(data$frc == unique(ls[[i]][["frc"]]) &
+                         data$lyr_bot == unique(unique(ls[[i]][["lyr_bot"]]))), ]
+    
+    # get title
+    title <- paste(ls[[i]][["frc"]], ls[[i]][["lyr_bot"]])
+    
+    # plot
+    ggplot(ls[[i]], aes(xvar, yvar)) +
+      geom_line(aes(color = !! quo_var, linetype = frc), size = .8) +
+      geom_ribbon(aes(ymin = LCL, ymax = UCL, fill = !! quo_var, linetype = frc), alpha = .1, show.legend = FALSE) +
+      geom_point(data = data,
+        aes(year, frc_14c, color = !! quo_var, shape = ecoFrc), size = 1.5, alpha = .8) +
+      # atm
+      geom_line(data = atm.14c, aes(year, d14c, linetype = frc), color = "black") +
+      scale_linetype_manual(name = NULL, 
+                            limits = c("minC", "fPOM", "atmosphere"),
+                            values = c("minC" = 1,
+                                       "fPOM" = 2,
+                                       "atmosphere" = 3)) +
+      scale_shape_manual(name = NULL,
+                         limits = c("warm (minC)", "cool (minC)", "cold (minC)",
+                                    "warm (fPOM)", "cool (fPOM)", "cold (fPOM)"),
+                         values = c("warm (minC)" = 15, 
+                                    "cool (minC)" = 17, 
+                                    "cold (minC)" = 16,
+                                    "warm (fPOM)" = 0, 
+                                    "cool (fPOM)" = 2, 
+                                    "cold (fPOM)" = 1)) +  
+      scale_color_manual(name = NULL,
+                         values = cvals) +
+      scale_fill_manual(name = NULL,
+                        values = cvals) +
+      scale_x_continuous(limits = c(0, 20), 
+                         breaks = c(1, 9, 19), 
+                         expand = expansion(add = 2),
+                         labels = function (x) x + 2000) +
+      # coord_cartesian(ylim = c(-110, 170)) +
+      facet_grid(rows = vars(eco), cols = vars(pm)) +
+      ggtitle(title) +
+      theme_bw() +
+      theme(panel.grid = element_blank(),
+            axis.title = element_blank(),
+            axis.text.x = element_text(size = 7),
+            strip.background = element_blank(),
+            strip.text.x = element_blank(),
+            plot.margin = unit(rep(0, 4), "cm"),
+            legend.position = "none")
+  })
+}
+
+ts.plot.ls <- plot.fx(ls = ts.emmip.ls, data = dens.01.09.19.sp.df, var = "pm")
+
+emtrends(lm(frc_14c ~ year * PMeco, dens.01.09.19.sp.df[dens.01.09.19.sp.df$lyr_bot == "10" & dens.01.09.19.sp.df$frc == "fPOM", ]), pairwise ~ PMeco, var = "year")
+```
+
+```{r ts-stats}
+dens.01.09.19.sp.df$year_i <- dens.01.09.19.sp.df$year - 2000
+
+# fPOM
+fPOM.ts.mod.10 <- lm(frc_14c ~ year_i * pm * eco, 
+                     dens.01.09.19.sp.df[dens.01.09.19.sp.df$frc == "fPOM" &
+                                           dens.01.09.19.sp.df$lyr_bot == 10, ])
+fPOM.ts.mod.20 <- lm(frc_14c ~ year_i * pm * eco, 
+                     dens.01.09.19.sp.df[dens.01.09.19.sp.df$frc == "fPOM" &
+                                           dens.01.09.19.sp.df$lyr_bot == 20, ])
+fPOM.ts.mod.30 <- lm(frc_14c ~ year_i * pm * eco, 
+                     dens.01.09.19.sp.df[dens.01.09.19.sp.df$frc == "fPOM" &
+                                           dens.01.09.19.sp.df$lyr_bot == 30, ])
+summary(fPOM.ts.mod.10)
+summary(fPOM.ts.mod.20)
+summary(fPOM.ts.mod.30) # all ns
+
+# minC
+minC.ts.mod.10 <- lm(frc_14c ~ year_i * pm * eco, 
+                     dens.01.09.19.sp.df[dens.01.09.19.sp.df$frc == "minC" &
+                                           dens.01.09.19.sp.df$lyr_bot == 10, ])
+minC.ts.mod.20 <- lm(frc_14c ~ year_i * pm * eco, 
+                     dens.01.09.19.sp.df[dens.01.09.19.sp.df$frc == "minC" &
+                                           dens.01.09.19.sp.df$lyr_bot == 20, ])
+minC.ts.mod.30 <- lm(frc_14c ~ year_i * pm * eco, 
+                     dens.01.09.19.sp.df[dens.01.09.19.sp.df$frc == "minC" &
+                                           dens.01.09.19.sp.df$lyr_bot == 30, ])
+summary(minC.ts.mod.10)
+summary(minC.ts.mod.20)
+summary(minC.ts.mod.30) # most interesting
+
+fPOM.ts.mod.10.em <- emmeans(fPOM.ts.mod.10, pairwise ~ pm | eco)
+fPOM.ts.mod.10.emip <- emtrends(fPOM.ts.mod.10, pairwise ~ pm * eco, var = "year_i")
+
+fPOM.ts.mod.20.em <- emmeans(fPOM.ts.mod.20, pairwise ~ pm | eco)
+fPOM.ts.mod.20.emip <- emtrends(fPOM.ts.mod.20, pairwise ~ pm * eco, var = "year_i") 
+
+minC.ts.mod.10.em <- emmeans(minC.ts.mod.10, pairwise ~ pm | eco)
+minC.ts.mod.10.emip <- emtrends(minC.ts.mod.10, pairwise ~ pm * eco, var = "year_i")
+
+minC.ts.mod.20.em <- emmeans(minC.ts.mod.20, pairwise ~ pm | eco)
+minC.ts.mod.20.emip <- emtrends(minC.ts.mod.20, pairwise ~ pm * eco, var = "year_i")
+
+minC.ts.mod.30.em <- emmeans(minC.ts.mod.30, pairwise ~ pm | eco)
+minC.ts.mod.30.emip <- emtrends(minC.ts.mod.30, pairwise ~ pm * eco, var = "year_i")
 ```
 
 ### Char pool calc
@@ -1442,7 +1715,7 @@ char.fx <- function(pom_14c) {
 # make df of pom + minC, calculate char C using Koarashi data
 pom.c.14c.01.df <- merge(
   pom.c.01.df,
-  dens.01.19.df %>%
+  dens.01.09.19.sp.df %>%
     filter(year == 2001),
   by = c("PMeco", "frc", "lyr_bot")) %>%
   mutate(wtd_14c = c_POM_frc * frc_14c) %>%
@@ -1485,63 +1758,97 @@ ggplot(pom.c.14c.01.df, aes(eco, d14c_nonChar, fill = pm)) +
 #   theme(panel.grid = element_blank())
 ```
 
-### Free light vs respired 14C
+### Fraction vs respired 14C
 
 ```{r plot-LF-inc}
 # load data
 load("/Users/jeff/sra-ts/source/sra.all.min.RData")
-load("/Users/jeff/sra-ts/source/sra.inc.all.RData") # raw
+load("/Users/jeff/sra-ts/source/sra.inc.all.RData") # original depths
 load("/Users/jeff/sra-ts/source/sra.19.01.inc.RData") # splined
+load("/Users/jeff/sra-ts/source/sra.2001.inc.ls.RData") # reps '01
+load("/Users/jeff/sra-ts/source/sra.2019.inc.ls.RData") # reps '19
 
 # convert dens.df to wide
 dens.01.19.df.w <- dens.01.09.19.df %>%
   select(PMeco, Year, frc, lyr_bot, frc_14c) %>%
   pivot_wider(names_from = frc, values_from = frc_14c)
 dens.inc.min.w <- merge(
-  sra.inc.all,
+  sra.inc.all %>%
+    filter(d14c_mean > -70),
   dens.01.19.df.w %>%
     mutate(pm = ifelse(grepl("AN", PMeco), "andesite", 
                        ifelse(grepl("BS", PMeco), "basalt", "granite")),
            eco = ifelse(grepl("pp", PMeco), "warm", 
                         ifelse(grepl("wf", PMeco), "cool", "cold"))))
 
-# add depth index col
-dens.inc.min.w <- bind_rows(
-  lapply(split(dens.inc.min.w, dens.inc.min.w$Year), function(x) {
-    bind_rows(lapply(split(x, x$PMeco), function(y) {
-      if (is.null(y$depth)) {
-       y[order(y$lyr_bot), ] %>%
-        mutate(depth = seq(1, nrow(y))) 
-      }
-    }))
-  }))
+# depth index fx
+depth.ix.fx <- function(df, split_var_a = "Year", split_var_b = "PMeco") {
+  bind_rows(
+    lapply(split(df, df[[split_var_a]]), function(x) 
+      bind_rows(lapply(split(x, x[[split_var_b]]), function(y) {
+        if (is.null(y$depth)) {
+          y[order(y$lyr_bot), ] %>%
+            mutate(depth = seq(1, nrow(y))) 
+        }
+      }))
+      )
+    )
+}
 
+# make reps df
+dens.inc.reps.w <- merge(
+  bind_rows(
+    mapply(rbind, 
+           sra.2019.inc.ls,
+           sra.2001.inc.ls,
+           SIMPLIFY = FALSE)),
+  dens.01.19.df.w %>%
+    filter(Year != 2009)) %>%
+  mutate(pm = ifelse(grepl("AN", PMeco), "andesite", 
+                       ifelse(grepl("BS", PMeco), "basalt", "granite")),
+         eco = ifelse(grepl("pp", PMeco), "warm", 
+                        ifelse(grepl("wf", PMeco), "cool", "cold")),
+         year = factor(Year)) %>%
+  filter(d14c > -70)
+dens.inc.reps.w <- bind_rows(
+  lapply(split(dens.inc.reps.w, dens.inc.reps.w$Year), function(x) depth.ix.fx(x, split_var_a = "rep")))
+
+# add depth index col
+dens.inc.min.w <- depth.ix.fx(dens.inc.min.w)
 
 # plot inc v LF
 # plot profiles by year and fraction type
-dens.inc.min.w %>%
-  filter(d14c_mean > -70) %>%
-  ggplot(., aes(d14c_mean, fPOM, color = pm, shape = eco)) +
-  geom_vline(xintercept = 0, color = "lightgray") +
-  geom_hline(yintercept = 0, color = "lightgray") +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
-  geom_point(size = 3) +
-  geom_errorbarh(aes(xmax = d14c_u, xmin = d14c_l), height = 1) +
-  scale_color_manual(name = "Parent material",
-                     values = c("andesite" = andesite,
-                                "basalt" = basalt,
-                                "granite" = granite)) +
-  scale_shape_manual(name = "Climate",
-                     values = c("warm" = 15,
-                                "cool" = 17,
-                                "cold" = 16)) +
-  # coord_cartesian(xlim = c(-120, 110), ylim = c(-120, 110)) +
-  facet_grid(cols = vars(depth), rows = vars(Year)) + 
-  xlab(expression(Delta*''^14*'C-CO'[2]*' (‰)')) +
-  ylab(expression('free light '*Delta*''^14*'C (‰)')) +
-  theme_bw() +
-  theme(panel.grid = element_blank(),
-        aspect.ratio = 1)
+inc.plot.fx <- function(dens.inc.df, frc, Year) {
+  
+  quo_var <- sym(frc)
+  ylab <- ifelse(frc == "fPOM", expression('free light C '*Delta*''^14*'C (‰)'), 
+                 ifelse(frc == "oPOM", 
+                        expression('occluded light C '*Delta*''^14*'C (‰)'),
+                        expression('min-assoc. C '*Delta*''^14*'C (‰)')))
+  dens.inc.df %>%
+    filter(d14c_mean > -70) %>%
+    ggplot(., aes(d14c_mean, !! quo_var, color = pm, shape = eco)) +
+    geom_vline(xintercept = 0, color = "lightgray") +
+    geom_hline(yintercept = 0, color = "lightgray") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    geom_point(size = 3) +
+    geom_errorbarh(aes(xmax = d14c_u, xmin = d14c_l), height = 1) +
+    scale_color_manual(name = "Parent material",
+                       values = c("andesite" = andesite,
+                                  "basalt" = basalt,
+                                  "granite" = granite)) +
+    scale_shape_manual(name = "Climate",
+                       values = c("warm" = 15,
+                                  "cool" = 17,
+                                  "cold" = 16)) +
+    # coord_cartesian(xlim = c(-120, 110), ylim = c(-120, 110)) +
+    facet_grid(cols = vars(depth), rows = vars(Year)) + 
+    xlab(expression(Delta*''^14*'C-CO'[2]*' (‰)')) +
+    ylab(ylab) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+}
 
 # plot respired against nonChar; splined data; '01 only
 dens.inc.nonChar.df <- merge(
@@ -1564,12 +1871,166 @@ dens.inc.nonChar.df %>%
                      values = c("warm" = 15,
                                 "cool" = 17,
                                 "cold" = 16)) +
-  facet_grid(cols = vars(lyr_bot)) + 
+  facet_grid(cols = vars(lyr_bot)) +
   xlab(expression(Delta*''^14*'C-CO'[2]*' (‰)')) +
   ylab(expression('non-char '*Delta*''^14*'C (‰)')) +
   theme_bw() +
   theme(panel.grid = element_blank(),
         aspect.ratio = 1)
+```
+
+```{r plot-inc-dens}
+inc.plot.fx(dens.inc.min.w, "fPOM", "2019") 
+inc.plot.fx(dens.inc.min.w, "oPOM")
+inc.plot.fx(dens.inc.min.w, "minC", "2019")
+inc.plot.fx(dens.inc.min.w, "minC", "2001")
+```
+
+```{r stats-frc-resp}
+fPOM.resp.mod <- lm(fPOM ~ d14c * pm * eco, dens.inc.reps.w)
+minC.resp.mod <- lm(minC ~ d14c * pm * eco + year, dens.inc.reps.w)
+minC.resp.mod.01 <- lm(minC ~ d14c * pm * eco, 
+                       dens.inc.reps.w[dens.inc.reps.w$Year == "2001", ])
+minC.resp.mod.19 <- lm(minC ~ d14c * pm * eco, 
+                       dens.inc.reps.w[dens.inc.reps.w$Year == "2019", ])
+
+summary(fPOM.resp.mod)
+summary(minC.resp.mod)
+
+fPOM.resp.em.PMeco <- emmeans(fPOM.resp.mod, pairwise ~ pm | eco)
+fPOM.resp.em.ECOpm <- emmeans(fPOM.resp.mod, pairwise ~ eco | pm)
+fPOM.resp.emip.eco <- emtrends(fPOM.resp.mod, pairwise ~ eco, var = "d14c") # ns
+fPOM.resp.emip.pm <- emtrends(fPOM.resp.mod, pairwise ~ pm, var = "d14c") # ns
+
+minC.resp.em.PMeco <- emmeans(minC.resp.mod, pairwise ~ pm | eco)
+minC.resp.em.ECOpm <- emmeans(minC.resp.mod, pairwise ~ eco | pm)
+minC.resp.emip.eco <- emtrends(minC.resp.mod, pairwise ~ eco, var = "d14c") 
+# cold - warm p = 0.0176, est dif = -.44
+minC.resp.emip.pm <- emtrends(minC.resp.mod, pairwise ~ pm, var = "d14c") # ns
+```
+
+```{r frc-resp-plots-egu}
+# plot fx
+dens.inc.plot.fx <- function(df, var, d14c_var, f_var_c = NA, f_var_r = NA, frc_filter = NA, smooth = FALSE, by_group = TRUE) {
+  
+  # quote vars
+  quo_var <- sym(var)
+  quo_d14c_var <- sym(d14c_var)
+  
+  # mutate df
+  df <- df %>%
+    select(!oPOM) %>%
+    pivot_longer(cols = c(fPOM, minC), names_to = "frc", values_to = "frc_14c") %>%
+    mutate(frc = ifelse(frc == "fPOM", "free light", "heavy"),
+           ecoFrc = paste0(eco, " (", frc, ")"))
+  
+  # set colors
+  if (var == "pm") {
+    col_name <- "Parent material"
+    cvals <- c("andesite" = andesite, "basalt" = basalt, "granite" = granite) 
+  } else {
+    col_name <- "Climate"
+    cvals <- c("warm" = warm, "cool" = cool, "cold" = cold)
+  }
+  
+  # frc filter
+  if (!is.na(frc_filter)) {
+    df <- df %>%
+      filter(frc == frc_filter)
+    if (frc_filter == "free light") {
+      shp_vals <- c("warm (free light)" = 0,
+                   "cool (free light)" = 2,
+                   "cold (free light)" = 1)
+    } else {
+      shp_vals <- c("warm (heavy)" = 15,
+                   "cool (heavy)" = 17,
+                   "cold (heavy)" = 16)
+    }
+  }
+  
+  if (by_group) {
+    p <- ggplot(df, aes(!! quo_d14c_var, frc_14c, color = !! quo_var)) 
+  } else {
+    p <- ggplot(df, aes(!! quo_d14c_var, frc_14c)) 
+  }
+  p <- p +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    scale_color_manual(name = col_name,
+                       values = cvals) +
+    scale_shape_manual(name = "Climate (fraction)",
+                       values = shp_vals) +
+    scale_size(name = "Depth",
+               breaks = c(2, 3, 4),
+               range = c(2, 4),
+               labels = c("1", "2", "3")) +
+    # coord_cartesian(xlim = c(-140, 190), ylim = c(-140, 190)) +
+    ylab(expression('Fraction '*Delta*''^14*' (‰)')) +
+    xlab(expression('Respired '*Delta*''^14*'C-CO'[2]*' (‰)')) +
+    guides(size = "none",
+           shape = guide_legend(override.aes = list(size = 3))) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1,
+          axis.title = element_text(size = 14),
+          axis.text = element_text(size = 12),
+          strip.text.x = element_text(face = "bold", size = 12),
+          strip.text.y = element_text(face = "bold", angle = 0, size = 12),
+          strip.background = element_rect(fill = "white", color = "white"),
+          legend.text = element_text(size = 12))
+  
+  if (!is.na(frc_filter)) {
+    p + ggtitle(frc_filter)
+  }
+  
+  if (!is.na(f_var_c)) {
+    quo_f_var_c <- sym(f_var_c)
+    if (is.na(f_var_r)) {
+      p <- p + facet_grid(cols = vars(!! quo_f_var_c))
+    } else {
+      quo_f_var_r <- sym(f_var_r)
+      p <- p + facet_grid(cols = vars(!! quo_f_var_c), rows = vars(!! quo_f_var_r)) 
+    }
+  }
+  
+  if (smooth) {
+    if (by_group) {
+      p <- p + 
+        geom_smooth(method = lm, formula = y ~ x, se = FALSE, size = 1.2)
+    } else {
+      p <- p + 
+        geom_smooth(method = lm, formula = y ~ x, se = FALSE, size = 1.2, 
+                    color = "black")
+    }
+    p <- p +
+      geom_point(aes(shape = ecoFrc, size = depth, color = !! quo_var), alpha = .3)
+      if (d14c_var == "d14c_mean") {
+        p <- p + 
+          geom_errorbarh(aes(xmax = d14c_u, xmin = d14c_l, color = !! quo_var), 
+                         height = 1, alpha = .3)
+      }
+    p +
+      guides(shape = guide_legend(override.aes = list(size = 3, alpha = 1)))
+  } else {
+    p <- p +
+      geom_point(aes(shape = ecoFrc, size = depth, color = !! quo_var))
+    if (d14c_var == "d14c_mean") {
+      p <- p +
+        geom_errorbarh(aes(xmax = d14c_u, xmin = d14c_l, color = !! quo_var), 
+                       height = 1, alpha = .3)
+    }
+    p
+  }
+}
+```
+
+```{r plot-frc-inc-egu}
+dens.inc.plot.fx(df = dens.inc.min.w, var = "pm", d14c_var = "d14c_mean", frc_filter = "free light")
+# dens.inc.plot.fx(df = dens.inc.min.w, var = "pm", d14c_var = "d14c_mean", frc_filter = "free light", smooth = T, by_group = F)
+dens.inc.plot.fx(df = dens.inc.min.w, var = "pm", d14c_var = "d14c_mean", frc_filter = "free light", smooth = T, by_group = T)
+dens.inc.plot.fx(df = dens.inc.min.w, var = "pm", d14c_var = "d14c_mean", frc_filter = "heavy")
+dens.inc.plot.fx(df = dens.inc.min.w, var = "pm", d14c_var = "d14c_mean", frc_filter = "heavy", smooth = T)
+dens.inc.plot.fx(df = dens.inc.min.w, var = "eco", d14c_var = "d14c_mean", frc_filter = "heavy", smooth = T)
+dens.inc.plot.fx(df = dens.inc.min.w, var = "eco", d14c_var = "d14c_mean", frc_filter = "free light", smooth = T)
 ```
 
 ## Thermal fractions
@@ -1651,4 +2112,371 @@ frc.14c.df %>%
   xlab("Thermal fraction") +
   theme_bw() +
   theme(panel.grid = element_blank())
+```
+
+```{r tml-frc-c}
+csv.dir <- "../data/external/sra_thml_14C_stoner"
+nms <- list.files(path = csv.dir, pattern = "*.csv")
+nms_smooth <- nms[which(grepl("smooth", nms))]
+csvlist <- lapply(seq_along(nms_smooth), function(i) {
+  read.csv(paste(csv.dir, nms_smooth[i], sep = "/"))
+})
+names(csvlist) <- sapply(nms_smooth, substr, start = 8, stop = 11, USE.NAMES = FALSE)
+# frc.fx <- function(dat, temps_in) {
+#   dat <- dat %>%
+#     filter(!is.na(CO2_scaled) | !is.na(temp)) %>%
+#     select(temp, CO2_scaled) %>%
+#     rename(Temp_av = temp,
+#            CO2_av = CO2_scaled)
+#   
+#   # fit spline
+#   # set knots
+#   maxtemp <- max(dat$Temp_av)
+#   temps <- c(temps_in, maxtemp) #To establish upper limit
+#   
+#   # define spline
+#   sp_fun <- splinefun(dat$Temp_av, dat$CO2_av, method = 'fmm')
+#   tol <- 1.5e-4 * 2
+#   arealist <- list()
+#   l <- 1
+#   u <- 1
+#   
+#   # run spline
+#   for (i in temps) {
+#     if (u == 1){
+#       lower <- 100
+#       upper <- temps[u]
+#       u <- u+1
+#     } else {
+#       lower <- temps[l]
+#       upper <- temps[u]
+#       u <- u + 1
+#       l <- l + 1
+#     }
+#     
+#     # calc area
+#     area <- integrate(sp_fun, lower, upper, subdivisions = 8000, rel.tol = tol)
+#     arealist <- c(arealist, area[1])
+#   }
+#   
+#   ### CO2 - modelled fit
+#   area_un <- unlist(arealist)
+#   totalarea <- integrate(sp_fun, 80, maxtemp, subdivisions = 8000, rel.tol = tol)[1]
+#   totalarea_int <- as.numeric(unlist(totalarea))
+#   
+#   #Calculate total area the right way
+#   fractions <- c()
+#   for (y in 1:length(temps)) {
+#     thistemp <- temps[y]
+#     CO2area <- 0
+#     if (y == 1) {
+#       CO2area_int <- integrate(sp_fun, 80, temps[y], subdivisions = 10000, rel.tol = tol)[1]
+#       CO2area <- as.numeric(unlist(CO2area_int))
+#       fracproportion <- CO2area / totalarea_int
+#       fractions <- c(fractions, fracproportion)
+#     } else {
+#       templower <- temps[y-1]
+#       CO2area_int <- integrate(sp_fun, templower, temps[y], subdivisions = 8000, rel.tol = tol)[1]
+#       CO2area <- as.numeric(unlist(CO2area_int))
+#       fracproportion <- CO2area / totalarea_int
+#       fractions <- c(fractions, fracproportion)
+#     }
+#   }
+#   data.frame(temp_u = temps, c_pct = fractions * 100)
+# }
+# cfrc.ls <- lapply(seq_along(csvlist), function(i) {
+#   frc.fx(csvlist[[i]], 
+#          HF_tml.temps.df[grep(substr(names(csvlist)[i], 1, 2), HF_tml.temps.df$PM), "temp"])
+# })
+# names(cfrc.ls) <- names(csvlist)
+# 
+# # get C content
+# lapply(seq_along(cfrc.ls), function(i) {
+#   if (i == 1) {
+#     sum(cfrc.ls[[i]][["c_pct"]][5], cfrc.ls[[i]][["c_pct"]][6])
+#   } else {
+#     cfrc.ls[[i]][["c_pct"]][6]
+#   }
+# })
+
+# use Shane's functions
+source("./utilities/FractionSizes.R")
+
+ANwf.tml.c.dist <- FractionSizes(
+  csv = ANwf.30.HF_tml, 
+  temps_in = HF_tml.temps.df[HF_tml.temps.df$PM == "AN", "temp"])
+BSwf.tml.c.dist <- FractionSizes(
+  csv = BSwf.30.HF_tml, 
+  temps_in = HF_tml.temps.df[HF_tml.temps.df$PM == "BS", "temp"])
+GRwf.tml.c.dist <- FractionSizes(
+  csv = GRwf.30.HF_tml, 
+  temps_in = HF_tml.temps.df[HF_tml.temps.df$PM == "GR", "temp"])
+
+FmDist.fx <- function(sample, ramp, FmTemp, bulkFm) {
+  
+  # get length
+  len_ramp <- which(ramp$temp == 775)
+
+  ## Grab only relevant data with new RPO smoothing outputs
+  ramp <- ramp[1:len_ramp, ]
+  ramp$CO2_prop = ramp$Moving / max(ramp$Moving, na.rm = TRUE)
+
+  ## Thermogram
+  # Temperature ramp, with intervals for interpolation = reso (default = 0.1)
+  ht <- seq(100, 775, by = .1)
+  rsp <- spline(ramp$temp, ramp$CO2_prop, xout = ht)
+  
+  ## Calculate total area under curve
+  totAUC <- AUC(ht, rsp$y, method = 'spline', subdivisions = length(ht))
+  
+  # loop
+  Area <- ht
+  n <- 1
+  cond <- c(rep(TRUE, length(ht) - 1), FALSE)
+  for (t in ht) {
+    if (cond[n]) {
+      Area[n] <- AUC(ht, rsp$y, from = t, to = ht[n + 1], method = 'spline') / totAUC
+    } else {
+      Area[n] <- AUC(ht, rsp$y, from = t, to = ht[n], method = 'spline') / totAUC
+    }
+    
+    # update counter
+    n <- n + 1
+  }
+  
+  # get natural cubic spline fit
+  fm_sp_nCub <- spline(y = bulkFm, x = FmTemp, method = 'natural', xout = ht)
+  
+  # Create data frame with natural cubic spline fit
+  df_sp <- data.frame(temp = ht, area = Area, fm_sp_nCub = fm_sp_nCub$y)
+  
+  # spline fit stats
+  NCubstats <- c(
+    wqntl = Hmisc::wtd.quantile(
+      df_sp$fm_sp_nCub, 
+      weights = df_sp$area,
+      normwt = TRUE, 
+      probs = c(0.1, 0.25, 0.5, 0.75, 0.9)),
+    wmean = Hmisc::wtd.mean(
+      df_sp$fm_sp_nCub, 
+      weight = df_sp$area))
+
+  # get his
+  NCubHist <- plotrix::weighted.hist(
+    df_sp$fm_sp_nCub, 
+    df_sp$area, 
+    freq = FALSE,
+    main = 'Natural Cubic Spline, Weighted', 
+    breaks = seq(from = min(df_sp$fm_sp_nCub), to = max(df_sp$fm_sp_nCub), length.out = 1000), 
+    plot = FALSE)
+  
+  # return
+  list(stats = data.frame(sample, NCubstats),
+       density = data.frame(sample, 
+                            MidFm = seq(from = 0.0, to = 2, length.out = 1000),
+                            NCub = c(0, NCubHist$density),
+                            NCubDens = density(NCubHist$density, n = 1000)$y),
+       area = data.frame(area = df_sp$area, 
+                         NCub_Fm = df_sp$fm_sp_nCub,
+                         NCub_14c = convert_fm_d14c(fm = df_sp$fm_sp_nCub,
+                                                    obs_date_y = 2019, 
+                                                    verbose = FALSE)))
+}
+
+ANwf.tml.fm.dist <- FmDist.fx(
+  "ANwf", 
+  ramp = ANwf.30.HF_tml, 
+  FmTemp = ANwf.tml.c.dist[[1]][["50th-Temp"]][2:6],
+  bulkFm = frc.14c.df[frc.14c.df$PM == "AN", "fm"])
+
+BSwf.tml.fm.dist <- FmDist.fx(
+  "BSwf", 
+  ramp = BSwf.30.HF_tml, 
+  FmTemp = BSwf.tml.c.dist[[1]][["50th-Temp"]][2:6],
+  bulkFm = frc.14c.df[frc.14c.df$PM == "BS", "fm"])
+
+GRwf.tml.fm.dist <- FmDist.fx(
+  "GRwf", 
+  ramp = GRwf.30.HF_tml, 
+  FmTemp = GRwf.tml.c.dist[[1]][["50th-Temp"]][2:6],
+  bulkFm = frc.14c.df[frc.14c.df$PM == "GR", "fm"])
+
+# combine and plot
+xlim <- convert_fm_d14c(
+  fm = c(min(ANwf.tml.fm.dist$stats$NCubstats,
+             BSwf.tml.fm.dist$stats$NCubstats,
+             GRwf.tml.fm.dist$stats$NCubstats) - .04,
+         max(ANwf.tml.fm.dist$stats$NCubstats,
+             BSwf.tml.fm.dist$stats$NCubstats,
+            GRwf.tml.fm.dist$stats$NCubstats) + .04),
+  obs_date_y = 2019, verbose = FALSE)
+rbind(
+  data.frame(PM = "andesite", ANwf.tml.fm.dist$area),
+  data.frame(PM = "basalt", BSwf.tml.fm.dist$area),
+  data.frame(PM = "granite", GRwf.tml.fm.dist$area)) %>%
+  ggplot(.) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_density(aes(x = NCub_14c, y = ..density.., weight = abs(area), 
+                   fill = PM, color = PM), alpha = .6) +
+  scale_color_manual(name = "Parent material",
+                     values = c("andesite" = andesite,
+                                "basalt" = basalt,
+                                "granite" = granite)) +
+  scale_fill_manual(name = "Parent material",
+                    values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  xlim(xlim) +
+  xlab(expression('C-weighted '*Delta*''^14*'C (‰)')) + 
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+```{r plot-tml-c-frc}
+# bind_rows(
+#   lapply(cfrc.ls, function(x) {
+#     t0 <- x[1, ]
+#     t0$temp_u <- 0
+#     n_new <- rbind(t0, x)
+#     n_new$c_pct <- c(x$c_pct, x$c_pct[nrow(x)])
+#     return(n_new)
+#   }), .id = "PMeco") %>%
+#   ggplot(., aes(temp_u, c_pct, color = PMeco)) +
+#   geom_step() +
+#     scale_color_manual(name = NULL,
+#                        values = c("ANwf" = andesite,
+#                                   "BSwf" = basalt,
+#                                   "GRwf" = granite),
+#                        labels = c("ANwf" = "andesite, cool",
+#                                   "BSwf" = "basalt, cool",
+#                                   "GRwf" = "granite, cool")) +
+#   ylab("% C") +
+#   xlab("Temperature") +
+#   theme_bw() +
+#   theme(panel.grid = element_blank())
+```
+
+```{r c-wtd-tml-14c}
+# cfrc.ls2 <- lapply(seq_along(cfrc.ls), function(i) {
+#   df <- cfrc.ls[[i]][2:nrow(cfrc.ls[[i]]), ]
+#   df %>%
+#     mutate(c_pct = c_pct * 10^-2,
+#            thml_frc = seq(1, nrow(.)),
+#            PMeco = names(cfrc.ls)[i],
+#            PM = substr(PMeco, 1, 2),
+#            ECO = substr(PMeco, 3, 4))
+# })
+# frc.14c.wtd.df <- merge(frc.14c.df, bind_rows(cfrc.ls2)) %>%
+#   mutate(d14c_wtd = d14c * c_pct)
+# 
+# # step-plot
+# frc.14c.wtd.df %>%
+#   filter(thml_frc == 5) %>%
+#   mutate(thml_frc = 6) %>%
+#   rbind(frc.14c.wtd.df, .) %>%
+#   ggplot(., aes(thml_frc, d14c_wtd, color = PM)) +
+#   geom_hline(yintercept = 0, linetype = "dotted") +
+#   geom_step() +
+#   scale_color_manual(name = NULL,
+#                      values = c("AN" = andesite,
+#                                 "BS" = basalt,
+#                                 "GR" = granite),
+#                      labels = c("AN" = "andesite",
+#                                 "BS" = "basalt",
+#                                 "GR" = "granite")) +
+#   scale_x_continuous(breaks = seq(1.5, 5.5), labels = as.character(seq(1, 5))) +
+#   ylab(expression('C weighted '*Delta*''^14*'C (‰)')) +
+#   xlab("Thermal fraction") +
+#   theme_bw() +
+#   theme(panel.grid = element_blank())
+# 
+# # cumulative C plots
+# frc.14c.wtd.cmtv.df <- bind_rows(
+#   lapply(split(frc.14c.wtd.df, frc.14c.wtd.df$PMeco), function(x) {
+#     # x  <- x[order(x$d14c), ] # to order by d14c
+#     for (i in 1:nrow(x)) {
+#       if (i == 1) {
+#         x$cmtv_c[i] <- x$c_pct[i] * 100
+#         x$xmin[i] <- 0
+#       } else {
+#         x$cmtv_c[i] <- x$c_pct[i] * 100 + x$cmtv_c[i - 1]
+#         x$xmin[i] <- x$cmtv_c[i - 1]
+#       }
+#     }
+#     x$syn_14c <- sum(x$d14c_wtd)
+#     return(x)
+#   })
+# )
+# 
+# # label facets
+# f_labs <- data.frame(cmtv_c = 1, d14c = -145, 
+#                      PM = c("AN", "BS", "GR"),
+#                      minC_14c = round(unique(frc.14c.wtd.cmtv.df$syn_14c), 0))
+# f_labs$label <- paste0(letters[1:3], ") ", 
+#                        c("andesite = ", "basalt = ", "granite = "), 
+#                       f_labs$minC_14c, "‰")
+#                   
+# 
+# # col-plot
+# frc.14c.wtd.cmtv.df %>%
+#   # mutate(norm_14c = d14c - syn_14c) %>%
+#   ggplot(., aes(cmtv_c, d14c)) +
+#   geom_hline(yintercept = 0) +
+#   geom_rect(aes(xmin = xmin, xmax = cmtv_c, 
+#                 ymin = 0, ymax = d14c,
+#                 fill = PM, alpha = temp_u), color = "black", size = .3) +
+#   geom_text(data = f_labs, aes(label = label), show.legend = FALSE,
+#   size = .36 * 12, fontface = "bold", hjust = "left") +
+#   scale_fill_manual(name = "Parent material",
+#                      values = c("AN" = andesite,
+#                                 "BS" = basalt,
+#                                 "GR" = granite),
+#                      labels = c("AN" = "andesite",
+#                                 "BS" = "basalt",
+#                                 "GR" = "granite")) +
+#   scale_alpha_continuous(name = "Temperature (°C)",
+#                          breaks = c(250, 350, 500, 800),
+#                          limits = c(150, 800), range = c(0, 1)) +
+#   scale_x_continuous(limits = c(0, 100), expand = c(0.01, 0.01)) +
+#   facet_grid(rows = vars(PM)) +
+#   ylab(expression(Delta*''^14*'C (‰)')) +
+#   xlab("Percent of total mineral-associated C") +
+#   theme_bw() +
+#   theme(panel.grid = element_blank(),
+#         strip.text = element_blank(),
+#         strip.background = element_rect(color = "white"),
+#         axis.text = element_text(size = 12),
+#         axis.title = element_text(size = 14),
+#         legend.text = element_text(size = 14),
+#         legend.title = element_text(size = 14))
+# 
+# # as steps
+# bind_rows(
+#   lapply(split(frc.14c.wtd.cmtv.df, frc.14c.wtd.cmtv.df$PMeco), function(x) {
+#     x_end <- x[nrow(x), ]
+#     x_end$xmin <- 100
+#     rbind(x, x_end)
+#   })) %>%
+#   ggplot(., aes(xmin, d14c, color = PM)) +
+#   geom_hline(yintercept = 0) +
+#   geom_step(size = 1) +
+#   scale_color_manual(name = "Parent material",
+#                      values = c("AN" = andesite,
+#                                 "BS" = basalt,
+#                                 "GR" = granite),
+#                      labels = c("AN" = "andesite",
+#                                 "BS" = "basalt",
+#                                 "GR" = "granite")) +
+#   scale_alpha_continuous(name = "Temperature (°C)",
+#                          breaks = c(250, 350, 500, 800),
+#                          limits = c(150, 800), range = c(0, 1)) +
+#   scale_x_continuous(limits = c(0, 100), expand = c(0.01, 0.01)) +
+#   ylab(expression(Delta*''^14*'C (‰)')) +
+#   xlab("Percent of total mineral-associated C") +
+#   theme_bw() +
+#   theme(panel.grid = element_blank(),
+#         axis.text = element_text(size = 12),
+#         axis.title = element_text(size = 14),
+#         legend.text = element_text(size = 14),
+#         legend.title = element_text(size = 14))
 ```
