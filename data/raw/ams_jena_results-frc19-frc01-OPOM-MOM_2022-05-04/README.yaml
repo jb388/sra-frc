@@ -1,0 +1,58 @@
+Files: Beem-Miller_27.xlsx
+Source: Axel Steinhof <steinhof@bgc-jena.mpg.de>
+Curator: J. Beem-Miller <jbeem@bgc-jena.mpg.de>
+Date: 04-May-2022
+Contents:
+  - 14C data from heavy (MOM) and occluded light (OPOM) fractions from 2001 and 2019 sampling, including redos, and 2019 litter samples
+Notes:
+  - "_R" suffix indicates a redo
+  - used C. Rasmussen's method for density fraction
+  - Sample names:
+    - 28_GRrf_comp_2001_0-8_MOM
+    - 35_GRpp_comp_2001_15-27_MOM
+    - 29_GRrf_comp_2001_8-27_MOM
+    - 19_BSrf_comp_2019_0-10_MOM_R
+    - 43_BSrf_comp_2001_0-8_MOM
+    - 44_BSrf_comp_2001_8-15_MOM
+    - 32_GRwf_comp_2001_13-28_MOM
+    - 31_GRwf_comp_2001_4-13_MOM
+    - 30_GRwf_comp_2001_0-4_MOM
+    - 34_GRpp_comp_2001_7-15_MOM
+    - 45_BSrf_comp_2001_15-30_MOM
+    - 49_BSpp_comp_2001_7-18_MOM
+    - 50_BSpp_comp_2001_18-28_MOM
+    - 36_ANrf_comp_2001_0-11_MOM
+    - 33_GRpp_comp_2001_0-7_MOM
+    - 37_ANrf_comp_2001_11-32_MOM
+    - 10_ANrf_comp_2019_0-10_MOM_R
+    - 46_BSwf_comp_2001_0-10_MOM
+    - 42_ANpp_comp_2001_13-33_MOM
+    - 11_ANrf_comp_2019_10-20_MOM_R
+    - 48_BSpp_comp_2001_0-7_MOM
+    - 12_ANrf_comp_2019_20-30_MOM_R
+    - 38_ANwf_comp_2001_0-11_MOM
+    - 25_BSpp_comp_2019_0-10_MOM_R
+    - 41_ANpp_comp_2001_6-13_MOM
+    - 40_ANpp_comp_2001_0-6_MOM
+    - 39_ANwf_comp_2001_11-35_MOM
+    - 47_BSwf_comp_2001_10-19_MOM
+    - 2_GRrf_comp_2019_10-20_OPOM
+    - 3_GRrf_comp_2019_20-30_OPOM
+    - 4_GRwf_comp_2019_0-10_OPOM
+    - 5_GRwf_comp_2019_10-20_OPOM
+    - 6_GRwf_comp_2019_20-30_OPOM
+    - 7_GRpp_comp_2019_0-10_OPOM
+    - 8_GRpp_comp_2019_10-20_OPOM
+    - 9_GRpp_comp_2019_20-30_OPOM
+    - 29_GRrf_comp_2001_8-27_OPOM
+    - ANpp_2019_L
+    - ANrf_2019_L
+    - ANwf_2019_L
+    - BSpp_2019_L
+    - BSrf_2019_L
+    - BSwf_2019_L
+    - GRpp_2019_L
+    - GRrf_2019_L
+    - GRwf_2019_L
+References:
+  - Rasmussen C, Throckmorton H, Liles G, Heckman K, Meding S, Horwath WR. Controls on Soil Organic Carbon Partitioning and Stabilization in the California Sierra Nevada. Soil Systems. 2018; 2(3):41. https://doi.org/10.3390/soilsystems2030041

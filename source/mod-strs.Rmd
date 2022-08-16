@@ -1,0 +1,1188 @@
+---
+title: Comparison script for SoilR model structures
+author:
+- address: Hans-Knoell-Str. 10, 07745 Jena, Germany
+  affiliation: '1'
+  corresponding: yes
+  email: jbeem@bgc-jena.mpg.de
+  name: Jeffrey Beem-Miller
+affiliation:
+- id: '1'
+  institution: Department of Biogeochemical Processes, Max Planck Institute for Biogeochemistry,
+    Jena, Germany
+output:
+  pdf_document: papaja::apa6_pdf
+  html_notebook:
+    css: custom.css
+    toc: yes
+    toc_depth: 2
+  word_document:
+    toc: yes
+    toc_depth: '2'
+  word: papaja::apa6_docx
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+documentclass: apa6
+draft: no
+figsintext: yes
+figurelist: yes
+floatsintext: yes
+footnotelist: no
+always_allow_html: true
+linenumbers: yes
+mask: no
+classoption: man
+shorttitle: SoilR model structures
+tablelist: no
+header_includes:
+- \usepackage[utf8]{inputenc}
+- \usepackage{float}
+- \usepackage{longtable}
+- \setlength{\headheight}{28pt}
+---
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = 'center', dev = c('cairo_pdf', 'png'),
+                      crop = NULL)
+options(scipen = 5)
+```
+
+```{r setup, include = FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(SoilR)
+library(readxl)
+library(ISRaD)
+library(emmeans)
+library(gt)
+library(GSIF)
+library(aqp)
+library(cowplot)
+library(papaja)
+library(kableExtra)
+library(grid)
+library(gridExtra)
+library(FME)
+library(forecast)
+```
+
+```{r col-pals}
+# color palettes for ECO & PM
+warm <- "#BF812D"
+cool <- "#80CDC1"
+cold <- "#01665E"
+granite <- "#9daba9"
+andesite <- "#382dbf"
+basalt <- "#bf382d"
+```
+
+```{r load raw-data-ingest fx}
+source("./utilities/jena_ams_ingest.R")
+source("./utilities/jena_elm_ingest.R")
+```
+
+```{r atm-14c}
+# use Hua2021 (SoilR package)
+NHZone2 <- read_excel(
+  "../data/external/Hua_2021/S0033822221000953sup002.xls", sheet = 2, skip = 5,
+  col_names = c("Year.AD", "mean.Delta14C", "sd.Delta14C", "mean.F14C", "sd.F14C")) %>%
+  data.frame
+
+# forcast data through 2021 (2 additional years)
+yrs <- seq(2000, 2019.25, by = 1/4) # A series of years by quarters
+nz2 <- spline(NHZone2[ , c(1, 4)], xout = yrs) # quarterly spline interpolation of fm data
+nhz2 <- ts(nz2$y, start = 2000, freq = 4) # Transformation into a time-series object
+m <- ets(nhz2) # Fits an exponential smoothing state space model to the time series
+f2 <- forecast(m, h = 2.75 * 4) # Uses the fitted model to forecast 2 years into the future
+
+# bind pre and post-bomb curves; add forecasted data
+atm14c <- rbind(
+  bind.C14curves(IntCal20, NHZone2, "AD"),
+  data.frame(Year.AD = seq(tsp(f2$mean)[1],tsp(f2$mean)[2], by=1/tsp(f2$mean)[3]),
+             Delta14C = suppressWarnings(
+               convert_fm_d14c(
+                 fm = as.numeric(f2$mean), obs_date_y = seq(2019.75, 2022, by = .25), verbose = FALSE)),
+             Sigma = NA)
+)
+
+# filter to 1900-2022 and calc annual averages
+Datm <- data.frame(Date = seq(1900.5, 2021.5), d14c = NA)
+for (i in seq_along(Datm$Date)) {
+  ix <- which(atm14c$Year.AD >= Datm[i, "Date"] & atm14c$Year.AD < Datm[i, "Date"] + 1)
+  Datm[i, "d14c"] <- mean(atm14c[ix, "Delta14C"], na.rm = TRUE)
+}
+```
+
+# Notes:
+1. bulk & respired 14C used for contraints
+  * three time points for bulk 14C (2001, 2009, 2019)
+  * two time points for respired CO2 (2001, 2019)
+2. steady-state C stocks (mean of 2001, 2009 stock data) used to determine inputs
+
+*This script requires the following input: obs.bulk.14c, obs.resp.14c, obs.Cstock*
+
+# Workflow
+1. Fit models by eye for initial parameter estimates
+2. Run modfit using bulk and respired 14C time series data
+3. Run bayesian parameter optimization
+4. Reject models w/ stocks outside ±2SE of measured values
+5. Adjust inputs w/ modeled stocks and reject models w/ unrealistic inputs
+    * If inputs are not realistic [how to come up with realistic ranges?], may have to implement some constraints on parameter optimization, e.g. if (In > max | In < min) { error } else { fit pars}. Could calculate rejection rate associated with this process...
+6. Compare models using AIC; other metrics? E.g. collinearity of parameters, ssr, bias, etc.
+7. Get ages and transit times from "best fit" models, e.g. lowest AIC value
+8. Compare distribution of ages/transit times with age distribution from density fractionation, thermal fractionation
+9. Compare ages, transit times, to mineral characteristics (PCM, minC proportion, etc.)
+10. Assess model structure/complexity [objective metrics here?]
+
+# Questions
+1. How to set acceptable ranges for inputs?
+2. How to deal with lag times? Would be nice to avoid fitting a lag parameter. Options: could set lag by depth, but likely the optimal lag value will vary by site. Could fit lag parameter for 1p models. Would this then be relevant for more complex systems?
+
+**Should copy relevant code for preparing obs.bulk.14c, obs.resp.14c**
+
+```{r read-14c-data, include = FALSE}
+# 2001, 2019
+ams_jena_results_dirs <- list.files("../data/raw", pattern = "ams_jena_results", full.names = TRUE)
+ams_results_ls <- lapply(seq_along(ams_jena_results_dirs), function(i) {
+  read_jena_ams_results(ams_jena_results_dirs[i])
+})
+names(ams_results_ls) <- list.files("../data/raw", pattern = "ams_jena_results")
+
+# 2009
+sra.09.all <- read_excel(
+  "../data/external/sra_ras_sum/sierra_data_summary_2020.xlsx", 
+  sheet = "Data_Summary_2018_paper") %>% 
+  type.convert(., as.is = TRUE) %>% 
+  mutate(mass_kgm2 = Soil_finefraction * Thickness_cm * BD_g_cm_3 * 10) %>%
+  data.frame
+pro_nms <- substr(unique(sra.09.all$pro_name), 1, 4)
+sra.2009.ls <- split(sra.09.all, sra.09.all$pro_name)
+names(sra.2009.ls) <- pro_nms
+```
+
+# load pre-built bulk, respired 14C objs
+```{r obs-blk-rsp}
+load("/Users/jeff/sra-ts/source/obs.resp.14c.RData")
+load("/Users/jeff/sra-ts/source/obs.bulk.14c.RData")
+```
+
+# SOC stocks
+```{r obs-blk-c-dat}
+# 2019
+elm_results_dir <- list.files("../data/raw", pattern = "elm_jena_results-soil", full.names = TRUE)
+elm_results_ls <- suppressMessages(lapply(seq_along(elm_results_dir), function(i) {
+  template_file <- "../data/raw/elm_jena_template/elm_jena_template2.xls"
+  read_jena_elm_results(elm_results_dir[i], template_file)
+}))
+names(elm_results_ls) <- list.files("../data/raw", pattern = "elm_jena_results-soil")
+
+# extract to df
+sra.19.blkC.all <- bind_rows(unlist(elm_results_ls, recursive = FALSE)) %>%
+  mutate(PMeco = sapply(strsplit(ID, "_"), "[", 2),
+         pro_rep = sapply(strsplit(ID, "_"), "[", 3),
+         depth = sapply(strsplit(ID, "_"), "[", 4),
+         year = 2019)
+
+# 0-30 cm only
+sra.19.blkC <- bind_rows(
+  lapply(split(sra.19.blkC.all, sra.19.blkC.all$PMeco), function(df) {
+    df$lyr_bot <- as.numeric(unlist(lapply(strsplit(df$depth, "-"), "[[", 2)))
+    df <- df[df$lyr_bot < 31, ]
+    df$pro_name <- paste(df$PMeco, df$pro_rep, sep = "_")
+    return(df[ , c("year", "PMeco", "pro_rep", "depth", "lyr_bot", "C", "N")])
+  }))
+save(sra.19.blkC, file = "sra.19.blkC.RData")
+
+# c-spline fx
+sp.fx <- function(df, sp_var_in, sp_var_out, d = t(c(0, 10, 20, 30)), year) {
+  out <- bind_rows(
+    lapply(split(df, df$PMeco), function(x) {
+      depths(x) <- pro_name ~ lyr_top + lyr_bot
+      sp <- suppressMessages(
+        mpspline(x, var.name = sp_var_in, d = d, show.progress = FALSE))$var.std
+      sp$rep <- seq(1, nrow(sp))
+      sp %>%
+        pivot_longer(cols = 1:3, names_to = "depth", values_to = sp_var_out)
+    }), .id = "PMeco") %>%
+    mutate(lyr_bot = as.numeric(substr(sapply(strsplit(depth, "-"), "[", 2), 1, 2)),
+           year = year) %>% data.frame
+  out[ , c("PMeco", "rep", "year", "lyr_bot", sp_var_out)]
+}
+
+## 2001
+sra.01.blkC <- read_excel("../data/external/sra_ras_sum/sierra_data_summary_2020.xlsx", sheet = "2001_bulk_data") %>% type.convert(., as.is = TRUE) %>% mutate(pro_name = paste(PMeco, pro_rep, sep = "_")) %>% data.frame 
+sra.01.blkC <- sra.01.blkC[c(which(grepl("AN", sra.01.blkC$ID)), which(grepl("BS", sra.01.blkC$ID)), which(grepl("GR", sra.01.blkC$ID))), ]
+sra.01.blkC <- sra.01.blkC[which(!is.na(sra.01.blkC$C.)), ]
+# convert lyr_top to numeric and add pro_name col
+sra.01.blkC$lyr_top <- as.numeric(sra.01.blkC$lyr_top)
+sra.01.blkC$pro_name <- paste0(sra.01.blkC$PMeco, sra.01.blkC$pro_rep)
+sra.01.blkC$lyr_soc <- sra.01.blkC$bd.g.cm3 * sra.01.blkC$fine.earth. * sra.01.blkC$C. * (sra.01.blkC$lyr_bot - sra.01.blkC$lyr_top) * 10^-3
+blkC.rep.soc.sp.01.df <- sp.fx(sra.01.blkC, "lyr_soc", "lyr_soc", year = 2001)
+
+## 2009
+sra.09.blkC <- read_excel("../data/external/sra_ras_sum/sierra_data_summary_2020.xlsx", sheet = "2009_bulk_data") %>% type.convert(., as.is = TRUE) %>% data.frame
+sra.09.blkC$PMeco <- paste0(toupper(substr(sra.09.blkC$Parent_Material, 1, 2)),
+                            tolower(sra.09.blkC$Biome))
+sra.09.blkC$PMeco <- ifelse(
+  substr(sra.09.blkC$PMeco, 1, 2) == "BA", 
+  paste0("BS", substr(sra.09.blkC$PMeco, 3, 4)), 
+  sra.09.blkC$PMeco)
+names(sra.09.blkC)[which(names(sra.09.blkC) == "top.mineral")] <- "lyr_top"
+names(sra.09.blkC)[which(names(sra.09.blkC) == "bottom.mineral")] <- "lyr_bot"
+sra.09.blkC$lyr_soc <- sra.09.blkC$Thickness_cm * sra.09.blkC$BD_g_cm_3 * sra.09.blkC$Soil_finefraction * sra.09.blkC$C_pct * 10^-1
+# fit spline to C data (0-10, 10-20, 20-30 cm output)
+blkC.rep.soc.sp.09.df <- sp.fx(sra.09.blkC, "lyr_soc", "lyr_soc", year = 2009)
+
+## SOC stocks
+# use mean of 2001 and 2009 SOC stocks for steady-state estimate
+csoc.19.0_30.df <- rbind(blkC.rep.soc.sp.09.df, blkC.rep.soc.sp.01.df) %>%
+  mutate(lyr_top = lyr_bot - 10,
+         lyr_name = paste0(PMeco, "_", lyr_top, "-", lyr_bot))
+csoc.19.0_30.sum.df <- csoc.19.0_30.df %>%
+  group_by(PMeco, lyr_top, lyr_bot) %>%
+  summarize(across(lyr_soc, .fns = list(mean = mean, sd = sd)),
+            n = n(), .groups = "drop") %>%
+  mutate(lyr_name = paste0(PMeco, "_", lyr_top, "-", lyr_bot),
+         lyr_soc_lwr = lyr_soc_mean - lyr_soc_sd / sqrt(n) * 2,
+         lyr_soc_upr = lyr_soc_mean + lyr_soc_sd / sqrt(n) * 2)
+csoc.19.0_30.sum.ls <- split(csoc.19.0_30.sum.df, csoc.19.0_30.sum.df$lyr_name)
+csoc.19.0_30 <- lapply(csoc.19.0_30.sum.ls, function(df) 
+  data.frame(lyr_soc = df$lyr_soc_mean, lyr_soc_lwr = df$lyr_soc_lwr, lyr_soc_upr = df$lyr_soc_upr))
+obs.cStock <- lapply(split(csoc.19.0_30.df, csoc.19.0_30.df$lyr_name), function(x)
+      x %>% rename(time = year, cStock = lyr_soc) %>% select(time, cStock) %>% data.frame)
+```
+
+```{r mod-inputs}
+# start with In = 1
+in.1.ls <- lapply(vector(mode = "list", length = 27), function(x) x <- 1)
+```
+
+```{r mod-fxs}
+# lambda (true half-life of 14C)
+lambda <- 1 / 8267
+
+# get initial fm value from k (pre-bomb)
+fm <- function (k){
+  k/(k + lambda)
+}
+
+# get k from initial fm (pre-bomb)
+k <- function (fm) {
+  (fm * lambda)/(1 - fm)
+}
+
+# splicing indices
+ix.10 <- seq(1, 27, 3)
+ix.20 <- seq(2, 27, 3)
+ix.30 <- seq(3, 27, 3)
+
+# Atm 14C for years in which bulk/resp 14C are known
+atm14c.01.09.19 <- data.frame(
+  year = c(2001, 2009, 2019),
+  d14c = c(mean(atm14c[which(atm14c$Year.AD > 2001 & atm14c$Year.AD < 2002), "Delta14C"]),
+           mean(atm14c[which(atm14c$Year.AD > 2009 & atm14c$Year.AD < 2010), "Delta14C"]),
+           mean(atm14c[which(atm14c$Year.AD > 2019 & atm14c$Year.AD < 2020), "Delta14C"])))
+
+# constraint df fx
+con.df.fx <- function(PMeco_depth) {
+  bulk.df <- obs.bulk.14c[[PMeco_depth]]
+  resp.df <- obs.resp.14c[[PMeco_depth]]
+  return(
+    con.df <- data.frame(pool = c(rep("bulkC", nrow(bulk.df)), rep("respiration", nrow(resp.df))),
+                         d14c = c(bulk.df$bulkC, resp.df$resp),
+                         Year = c(bulk.df$time, resp.df$time)))
+}
+
+# C stocks function
+soc.fx <- function(pars, mod, In, out = "pools", mod_mat = FALSE) {
+
+  # steady-state stock calc fx
+  calc.soc <- function(A, in_vector) {
+    (-1 * solve(A) %*% in_vector)
+  }
+  
+  # model matrices
+  if (mod == "1p") {
+    
+    # 1p mod matrix
+    A <- pars
+    
+    # 1p steady-state stocks
+    in_vector <- In
+    ss.cstock <- pars^-1 * in_vector
+    
+    # pool names
+    pnms <- "bulkC"
+    
+  } else if (grepl("2p", mod)) {
+    
+    # pool names
+    pnms <- c("fast", "slow")
+    
+    # 2pp mod matrix
+    A <- -diag(pars[1:2])
+    
+    # 2pp steady-state C stocks
+    in_vector <- c(In * pars[3], In * (1 - pars[3]))
+    ss.cstock <- calc.soc(A, in_vector)
+    
+    if (mod == "2ps") {
+      
+      # 2ps mod matrix
+      A[2, 1] <- pars[3] * pars[1]
+      
+      # 2ps steady-state C stocks
+      in_vector <- c(In, 0)
+      ss.cstock <- calc.soc(A, in_vector)
+    }
+  } else if (grepl("3p", mod)) {
+    
+    # pool names
+    pnms <- c("fast", "slow", "passive")
+    
+    # 3pp mod matrix
+    A <- -diag(pars[1:3])
+    
+    # 3pp steady-state C stocks
+    in_vector <- c(In * pars[4], In * pars[5], In * (1 - pars[4] - pars[5]))
+    ss.cstock <- calc.soc(A, in_vector)
+    
+    if (mod == "3ps") {
+      
+      # 3ps mod matrix
+      A[2, 1] <- pars[4] * pars[1]
+      A[3, 2] <- pars[5] * pars[2] 
+      
+      # 3ps steady-state C stocks
+      in_vector <- c(In, 0, 0)
+      ss.cstock <- calc.soc(A, in_vector)
+    }
+  }
+  
+  if (out == "sum") {
+    soc <- sum(ss.cstock)
+    if (mod_mat) {
+      list(A_mat = A, in_vector = in_vector, ss_soc = soc, par_names = pnms)
+    } else {
+      soc
+    }
+  } else {
+    soc <- ss.cstock
+    if (mod_mat) {
+      list(A_mat = A, in_vector = in_vector, ss_soc = soc, par_names = pnms)
+    } else {
+      soc
+    }
+  }
+}
+
+# model fx
+modFun <- function(pars, mod, In, lag = 0, pass = TRUE, verbose = TRUE, out = "modFit", PMeco_depth = NULL, var_14c = "d14c") {
+  
+  # run soc.fx to get: mod_mat [[1]], in_vector [[2]], steady-state C [[3]], and pool names [[4]]
+  soc.fx_out <- soc.fx(pars, mod, In, mod_mat = TRUE)
+  ss.cstock <- soc.fx_out[[3]]
+  
+  # check for negative stocks
+  if (any(ss.cstock <= 0)) {
+    cat("pool ", which(ss.cstock <= 0), "< 0")
+  }
+  
+  # time index
+  ix.t <- c((lag + 1):nrow(Datm))
+  
+  # check for 1p mod
+  if (mod == "1p") {
+    model <- OnepModel14(
+      t = Datm$Date[ix.t],
+      k = soc.fx_out[[1]],
+      C0 = as.vector(ss.cstock),
+      F0_Delta14C = Delta14C_from_AbsoluteFractionModern(fm(soc.fx_out[[1]])),
+      In = soc.fx_out[[2]],
+      inputFc = Datm,
+      lag = lag,
+      pass = pass)
+  } else {
+    
+    # calculate initial 14C
+    F0_Delta14C <- unlist(
+      lapply(-diag(soc.fx_out[[1]]), function(x) Delta14C_from_AbsoluteFractionModern(fm(x))))
+    
+    # multipool model fx
+    mod.fx <- function(A,
+                       t,
+                       in_vector,
+                       C0,
+                       F0_Delta14C, 
+                       xi = 1, # timestep
+                       inputFc, 
+                       lag = lag,
+                       pass = pass) {
+      t_start = min(t)
+      t_stop = max(t)
+      inputFluxes = BoundInFluxes(function(t) {
+          matrix(nrow = length(in_vector), ncol = 1, in_vector)
+        }, t_start, t_stop)
+      if (length(xi) == 1) 
+        fX = function(t) {
+          xi
+        }
+      At = BoundLinDecompOp(map = function(t) {
+        fX(t) * A
+      }, t_start, t_stop)
+      Fc = BoundFc(inputFc, lag = lag, format = "Delta14C")
+      mod = Model_14(t, At, ivList = C0, initialValF = ConstFc(F0_Delta14C, "Delta14C"), 
+                     inputFluxes = inputFluxes, inputFc = Fc, pass = pass)
+    }
+    
+    # run model
+     model <- mod.fx(
+      A = soc.fx_out[[1]],
+      t = Datm$Date[ix.t],
+      in_vector = soc.fx_out[[2]],
+      C0 = as.vector(ss.cstock),
+      F0_Delta14C = F0_Delta14C,
+      inputFc = Datm,
+      lag = lag,
+      pass = pass) 
+    }
+
+  # get mod values
+  C14m <- getF14C(model)
+  C14p <- getF14(model) 
+  C14r <- getF14R(model)
+  Ctot <- getC(model)
+  
+  if (var_14c == "fm") {
+    dates <- Datm$Date[ix.t]
+    for (i in seq_along(dates)) {
+      C14m[i] <- convert_fm_d14c(d14c = C14m[i], obs_date_y = dates[i], verbose = FALSE) 
+      C14p[i] <- convert_fm_d14c(d14c = C14p[i], obs_date_y = dates[i], verbose = FALSE) 
+      C14r[i] <- convert_fm_d14c(d14c = C14r[i], obs_date_y = dates[i], verbose = FALSE)
+    }
+  }
+  
+  if (out == "modFit") {
+    # dataframe for modFit fx
+    data.frame(
+      time = Datm$Date[ix.t],
+      resp = C14r,
+      bulkC = rowSums(Ctot[1, ] / sum(Ctot[1, ]) * C14p),
+      cStock = sum(Ctot[1, ]))
+  } else {
+    
+    # sum c stocks
+    ss.cstock <- round(ss.cstock, 2)
+    cstock.sum <- ifelse(is.null(dim(ss.cstock)), ss.cstock, colSums(ss.cstock))
+    
+    if (verbose) {
+      # print site and steady-state stocks
+      if (!is.null(PMeco_depth)) cat(paste0(PMeco_depth, "\n"))
+      for (i in seq_along(ss.cstock)) {
+        cat(paste(soc.fx_out[[4]][i], ss.cstock[i], "\n"))
+      }
+      cat(cstock.sum, " (modeled total C stock)\n")
+      if (!is.null(PMeco_depth)) {
+        cat(round(csoc.19.0_30[[PMeco_depth]][ , "lyr_soc"], 1), " (measured total C stock)\n")
+        if (cstock.sum < csoc.19.0_30[[PMeco_depth]][ , "lyr_soc_lwr"]) cat("Modeled stocks too low w/ current inputs\n") else
+          if (cstock.sum > csoc.19.0_30[[PMeco_depth]][ , "lyr_soc_upr"]) cat("Modeled stocks too high w/ current inputs\n")
+      }
+    }
+    
+    # data frame for plotting
+    data.frame(
+      years = rep(Datm$Date[ix.t], (ncol(C14p) + 3)),
+      d14C = c(c(C14p),
+               C14m,
+               C14r,
+               Datm$d14c[ix.t]),
+      pool = rep(c(soc.fx_out[[4]], "bulkC", "respiration", "atm"), 
+                 each = nrow(C14p))) %>%
+      distinct
+  }
+}
+```
+
+```{r mod-plot-fx}
+C14.plot.fx <- function(plot.df, con.df, mod, pool_filter = NULL, PMeco_depth) {
+    
+  # set line and color values
+  cvals <- c("atm" = 8, "fast" = "#e41f88", "slow" = "#1f88e4", "passive" = "#1fe47b", "respiration" = "#e47b1f", "bulkC" = "black")
+  lvals <- c("atm" = 1, "fast" = 2, "slow" = 2, "passive" = 2, "respiration" = 1, "bulkC" = 1)
+  
+  # filter pools as desired
+  if (!is.null(pool_filter)) {
+    plot.df <- plot.df[which(plot.df$pool %in% pool_filter), ]
+  }
+  
+  # plot
+  plot.df %>%
+    ggplot(., aes(years, d14C, color = pool, linetype = pool)) +
+    geom_path() +
+    geom_point(data = con.df, aes(Year, d14c, color = pool), size = 3) +
+    scale_color_manual(name = "Pool", values = cvals) +
+    scale_linetype_manual(values = lvals) +
+    scale_x_continuous(limits = c(1950, 2022)) +
+    ggtitle(paste(PMeco_depth, mod)) +
+    xlab("Year") +
+    ylab(expression(''*Delta*''^14*'C (‰)')) +
+    guides(linetype = "none") +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+}
+```
+
+# Load initial parameter lists (1p, 2pp, 2ps, 3pp, 3ps)
+```{r pars-i-1p}
+load("pars.i.1p.RData")
+load("pars.i.2pp.RData")
+load("pars.i.2ps.RData")
+```
+
+# Optimize parameter sets
+```{r modFit-fx-multipool}
+mod.fits.fx <- function(pars, mod, In, sub, lag = 0, upper, lower, cost, var_14c = "d14c") {
+  
+  if (var_14c == "d14c") {
+    obs.bulk <- obs.bulk.14c
+    obs.resp <- obs.resp.14c
+  } else {
+    obs.bulk <- obs.bulk.fm
+    obs.resp <- obs.resp.fm
+  }
+  
+  # start loop
+  lapply(seq_along(pars[sub]), function(i) {
+    
+    # start timer and print PMeco_depth
+    start <- Sys.time()
+    cat(paste0(names(pars)[sub][i], " parameter fitting\n"))
+    
+    # set vars
+    PMeco_depth <- names(pars)[sub][i]
+    pars <- pars[sub][[i]]
+    
+    # Set input
+    In <- In[sub][[i]]
+    
+    # define cost function
+    if (cost == "14C + cStock") {
+      mod.Cost <- function(pars) {
+        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
+        cost1 <- modCost(model = modelOutput, obs = obs.bulk[sub][[i]], scaleVar = TRUE)
+        cost2 <- modCost(model = modelOutput, obs = obs.resp[sub][[i]], scaleVar = TRUE, cost = cost1) 
+        return(modCost(model = modelOutput, obs = obs.cStock[sub][[i]], cost = cost2))
+      }
+    } else if (cost == "14C") {
+      mod.Cost <- function(pars) {
+        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
+        cost1 <- modCost(model = modelOutput, obs = obs.bulk[sub][[i]], scaleVar = TRUE)
+        return(modCost(model = modelOutput, obs = obs.resp[sub][[i]], scaleVar = TRUE, cost = cost1))
+      } 
+    }
+    
+    # fit pars
+    fit <- tryCatch(
+      modFit(f = mod.Cost,
+             p = pars,
+             method = 'Nelder-Mead',
+             lower = lower,
+             upper = upper),
+      error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})      
+      
+    # parameter sensitivity
+    Sfun <- sensFun(mod.Cost, fit$par)
+    
+    # End timer and print elapsed time
+    end <- Sys.time()
+    cat(paste0("time: ", end - start, "\n"))
+    
+    # Return fitted parameters and sensitivity
+    return(list(modfit = fit, sens = Sfun))
+  }) 
+}
+```
+
+```{r modFit-fx-1pool}
+mod.fits.1p.fx <- function(par.ls, var_14c = "d14c") {
+  
+  # set constraint variable
+  if (var_14c == "d14c") {
+    obs.bulk <- obs.bulk.14c
+    obs.resp <- obs.resp.14c
+  } else {
+    obs.bulk <- obs.bulk.fm
+    obs.resp <- obs.resp.fm
+  }
+  
+  # start loop
+  lapply(seq_along(par.ls), function(i) {
+
+  # start timer and print PMeco_depth
+  start <- Sys.time()
+  cat(paste0(names(pars)[i], " parameter fitting\n"))
+  
+  # get k
+  k <- par.ls[[i]]
+
+  # model fx
+  modFun_1p <- function(k, var_14c = var_14c) {
+    mod <- OnepModel14(
+      t = Datm$Date,
+      k = k,
+      C0 = 1 / k,
+      F0_Delta14C = Delta14C_from_AbsoluteFractionModern(fm(k)),
+      In = 1,
+      inputFc = Datm, 
+      lag = 0,
+      pass = FALSE)
+  C14 <- getF14C(mod)
+  if (var_14c == "fm") {
+    for (i in seq_along(Datm$Date)) 
+      C14[i] <- convert_fm_d14c(d14c = C14[i], obs_date_y = Datm$Date[i], verbose = FALSE)
+  }
+  data.frame(
+    time = Datm$Date,
+    bulkC = C14,
+    resp = C14
+    )
+  }
+  
+  # define cost fx
+  mod.Cost <- function(k) {
+        modelOutput <- modFun_1p(k, var_14c = var_14c)
+        cost1 <- modCost(model = modelOutput, obs = obs.bulk[[i]], scaleVar = TRUE)
+        return(modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$model)
+  } 
+  
+  # return optimization
+  opt <- optim(par = k,
+               fn = mod.Cost,
+               method = "Brent",
+               lower = 0,
+               upper = 1,
+               hessian = TRUE)
+  
+  # rename "value" to ssr
+  names(opt)[which(names(opt) == "value")] <- "ssr"
+  
+  # retrieve variance and residuals from mod.Cost
+  modelOutput <- modFun_1p(opt$par, var_14c = var_14c)
+  cost1 <- modCost(model = modelOutput, obs = obs.bulk[[i]], scaleVar = TRUE)
+  mod.Cost.var <- modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$var
+  mod.Cost.res <- modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$residuals
+  
+  # add to opt and return
+  opt$var_ms <- mod.Cost.var$SSR * mod.Cost.var$scale
+  names(opt$var_ms) <- c("resp", "bulkC")
+  opt$obs.mod <- mod.Cost.res[ , c("obs", "mod", "name")]
+  opt$df.residual <- nrow(mod.Cost.res) - length(k) - 1
+  opt$residuals <- mod.Cost.res$res
+  names(opt$residuals) <- mod.Cost.res$name
+    
+  # End timer and print elapsed time
+  end <- Sys.time()
+  cat(paste0("time: ", end - start, "\n"))
+  
+  return(opt)
+  })
+}
+```
+
+```{r opt-1p-mod}
+# 1p fits
+mod.fits.1p <- mod.fits.1p.fx(pars.i.1p)
+names(mod.fits.1p) <- names(pars.i.1p)
+save(mod.fits.1p, file = paste0("../data/derived/modFit_pars/", "mod.fits.1p", "_", Sys.Date(), ".RData"))
+
+# 2pp fit
+mod.sens.fits.2pp <- mod.fits.fx(
+  pars = pars.i.2pp, 
+  mod = "2pp",
+  In = in.1.ls,
+  sub = 1:27,
+  lag = 0,
+  upper = c(1, 1, 1),
+  lower = c(0, 0, 0),
+  cost = "14C"
+)
+names(mod.sens.fits.2pp) <- names(pars.i.2pp)
+save(mod.sens.fits.2pp, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2pp", "_", Sys.Date(), ".RData"))
+
+
+# test long data format
+obs.bulk.14c.l <- lapply(obs.bulk.14c, function(x) {
+  x %>% 
+    group_by(time) %>% 
+    summarize(across(bulkC, .fns = list(mean = mean, sd = sd)), n = n()) %>%
+    mutate(name = "bulkC",
+           err = bulkC_sd / sqrt(n)) %>%
+    mutate(err = ifelse(is.na(err), mean(err, na.rm = TRUE), err)) %>%
+    rename(bulkC = bulkC_mean) %>%
+    select(name, time, bulkC, err) %>%
+    data.frame
+})
+obs.resp.14c.l <- lapply(obs.resp.14c, function(x) {
+  x %>% 
+    group_by(time) %>% 
+    summarize(across(resp, .fns = list(mean = mean, sd = sd)), n = n()) %>%
+    mutate(name = "resp",
+           err = resp_sd / sqrt(n)) %>%
+    mutate(err = ifelse(is.na(err), mean(err, na.rm = TRUE), err)) %>%
+    rename(resp = resp_mean) %>%
+    select(name, time, resp, err) %>%
+    data.frame
+})
+
+# test fraction modern as constraint
+obs.bulk.fm <- lapply(obs.bulk.14c, function(x) {
+  for (i in 1:nrow(x)) {
+    x$bulkC[i] <- convert_fm_d14c(d14c = x$bulkC[i], obs_date_y = x$time[i], verbose = FALSE) 
+  }
+  return(x)
+})
+obs.resp.fm <- lapply(obs.resp.14c, function(x) {
+  for (i in 1:nrow(x)) {
+    x$resp[i] <- convert_fm_d14c(d14c = x$resp[i], obs_date_y = x$time[i], verbose = FALSE) 
+  }
+  return(x)
+})
+
+# std cost fx w/ additional optional arguments
+mod.Cost.14c <- function(pars, mod, In = 1, lag = 0, sub = ix.10, i, verbose = FALSE, scaleVar = TRUE, wt = "none", var_14c = "d14c") {
+  
+  if (var_14c == "d14c") {
+    obs.bulk <- obs.bulk.14c
+    obs.resp <- obs.resp.14c
+  } else {
+    obs.bulk <- obs.bulk.fm
+    obs.resp <- obs.resp.fm
+  }
+        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
+        cost1 <- modCost(model = modelOutput, obs = obs.bulk[sub][[i]], weight = wt, scaleVar = scaleVar)
+        return(modCost(model = modelOutput, obs = obs.resp[sub][[i]], weight = wt, scaleVar = scaleVar, cost = cost1))
+}
+
+# long format cost fx w/ additional optional arguments
+mod.Cost.14c2 <- function(pars, mod, In = 1, lag = 0, sub = ix.10, i, verbose = FALSE, scaleVar = TRUE, var_14c = "d14c") {
+        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
+        cost1 <- modCost(model = modelOutput, obs = obs.bulk.14c.l[sub][[i]], y = "bulkC", err = "err", scaleVar = scaleVar)
+        return(modCost(model = modelOutput, obs = obs.resp.14c.l[sub][[i]], y = "resp", err = "err", scaleVar = scaleVar, cost = cost1))
+}
+
+# costs for initial pars, standard cost fx
+ANpp.10.2pp.modCost <- mod.Cost.14c(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1)
+# costs for fitted pars, standard cost fx
+ANpp.10.2pp.modCost.f <- mod.Cost.14c(ANpp.10.2pp.modFit$par, mod = "2pp", i = 1)
+
+# costs for initial pars, fm for costs
+ANpp.10.2pp.modCost.fm <- mod.Cost.14c(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, var_14c = "fm")
+# costs for fitted pars, standard cost fx
+ANpp.10.2pp.modCost.fm.f <- mod.Cost.14c(ANpp.10.2pp.modFit$par, mod = "2pp", i = 1, var_14c = "fm")
+
+# costs for initial pars, standard cost fx w/ errors weighted by reciprocal of sd
+ANpp.10.2pp.modCost.w <- mod.Cost.14c(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, wt = "std", scaleVar = FALSE)
+# costs for fitted pars, standard cost fx
+ANpp.10.2pp.modCost.w.f <- mod.Cost.14c(ANpp.10.2pp.modFit.w$par, mod = "2pp", wt = "std", i = 1, scaleVar = FALSE)
+
+# costs for initial pars, long format cost fx, scaleVar = T
+ANpp.10.2pp.modCost2 <- mod.Cost.14c2(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, scaleVar = TRUE)
+# costs for fitted pars, long format cost fx, scaleVar = T
+ANpp.10.2pp.modCost2.f <- mod.Cost.14c2(ANpp.10.2pp.modFit2$par, mod = "2pp", i = 1, scaleVar = TRUE)
+
+# costs for initial pars, long format cost fx, scaleVar = F
+ANpp.10.2pp.modCost2.1 <- mod.Cost.14c2(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, scaleVar = FALSE)
+# costs for fitted pars, long format cost fx, scaleVar = T
+ANpp.10.2pp.modCost2.1.f <- mod.Cost.14c2(ANpp.10.2pp.modFit2.1$par, mod = "2pp", i = 1, scaleVar = FALSE)
+
+# fit model w/ initial pars and std cost fx
+ANpp.10.2pp.modFit <- modFit(f = mod.Cost.14c,
+                             p = pars.i.2pp$`ANpp_0-10`,
+                             mod = "2pp",
+                             sub = ix.10, 
+                             i = 1,
+                             method = 'Nelder-Mead',
+                             lower = c(0, 0, 0),
+                             upper = c(1, 1, 1))
+ANpp.10.2pp.modFitted <- modFun(pars = ANpp.10.2pp.modFit$par, 
+                                mod = "2pp",
+                                In = 1,
+                                out = "")
+C14.plot.fx(ANpp.10.2pp.modFitted, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+
+# fit model w/ initial pars and fm cost fx
+ANpp.10.2pp.modFit.fm <- modFit(f = mod.Cost.14c,
+                                p = pars.i.2pp$`ANpp_0-10`,
+                                var_14c = "fm",
+                                mod = "2pp",
+                                sub = ix.10, 
+                                i = 1,
+                                method = 'Nelder-Mead',
+                                lower = c(0, 0, 0),
+                                upper = c(1, 1, 1))
+ANpp.10.2pp.modFitted.fm <- modFun(pars = ANpp.10.2pp.modFit.fm$par, 
+                                   mod = "2pp",
+                                   In = 1,
+                                   out = "")
+C14.plot.fx(ANpp.10.2pp.modFitted.fm, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+
+# fit model w/ initial pars and fm cost fx + err weighting
+ANpp.10.2pp.modFit.fm.w <- modFit(f = mod.Cost.14c,
+                                  p = pars.i.2pp$`ANpp_0-10`,
+                                  var_14c = "fm",
+                                  mod = "2pp",
+                                  wt = "std",
+                                  sub = ix.10, 
+                                  i = 1,
+                                  method = 'Nelder-Mead',
+                                  lower = c(0, 0, 0),
+                                  upper = c(1, 1, 1))
+ANpp.10.2pp.modFitted.fm.w <- modFun(pars = ANpp.10.2pp.modFit.fm.w$par, 
+                                     mod = "2pp",
+                                     In = 1,
+                                     out = "")
+C14.plot.fx(ANpp.10.2pp.modFitted.fm.w, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+
+# fit mod w/ initial pars and std cost fx + std weighting
+ANpp.10.2pp.modFit.w <- modFit(f = mod.Cost.14c,
+                              p = pars.i.2pp$`ANpp_0-10`,
+                              wt = "std",
+                              mod = "2pp",
+                              sub = ix.10, 
+                              i = 1,
+                              method = 'Nelder-Mead',
+                              lower = c(0, 0, 0),
+                              upper = c(1, 1, 1))
+ANpp.10.2pp.modFitted.w <- modFun(pars = ANpp.10.2pp.modFit.w$par, 
+                                mod = "2pp",
+                                In = 1,
+                                out = "")
+
+# fit mod w/ initial pars and long format cost fx
+ANpp.10.2pp.modFit2 <- modFit(f = mod.Cost.14c2,
+                              p = pars.i.2pp$`ANpp_0-10`,
+                              mod = "2pp",
+                              sub = ix.10, 
+                              i = 1,
+                              method = 'Nelder-Mead',
+                              lower = c(0, 0, 0),
+                              upper = c(1, 1, 1))
+ANpp.10.2pp.modFitted2 <- modFun(pars = ANpp.10.2pp.modFit2$par, 
+                                mod = "2pp",
+                                In = 1,
+                                out = "")
+
+
+ANpp.10.2pp.modFit2.1 <- modFit(f = mod.Cost.14c2,
+                              p = pars.i.2pp$`ANpp_0-10`,
+                              mod = "2pp",
+                              sub = ix.10, 
+                              i = 1,
+                              method = 'Nelder-Mead',
+                              lower = c(0, 0, 0),
+                              upper = c(1, 1, 1))
+ANpp.10.2pp.modFitted2.1 <- modFun(pars = ANpp.10.2pp.modFit2.1$par, 
+                                mod = "2pp",
+                                In = 1,
+                                out = "")
+C14.plot.fx(ANpp.10.2pp.modFitted, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+C14.plot.fx(ANpp.10.2pp.modFitted.w, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+C14.plot.fx(ANpp.10.2pp.modFitted2, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+C14.plot.fx(ANpp.10.2pp.modFitted2.1, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+C14.plot.fx(mod.fitted.2pp.i$`ANpp_0-10`, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+C14.plot.fx(mod.fitted.2pp$`ANpp_0-10`, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
+
+
+# 2ps fit
+mod.sens.fits.2ps <- mod.fits.fx(
+  pars = pars.i.2ps, 
+  mod = "2ps",
+  In = in.1.ls,
+  sub = 1:27,
+  lag = 0,
+  upper = c(1, 1, 1),
+  lower = c(0, 0, 0),
+  cost = "14C"
+)
+names(mod.sens.fits.2ps) <- names(pars.i.2ps)
+save(mod.sens.fits.2ps, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2ps", "_", Sys.Date(), ".RData"))
+```
+
+```{r }
+# load fits as needed
+if (!exists("mod.fits.1p")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.1p_2022-08-11.Rdata") 
+}
+if (!exists("mod.sens.fits.2pp")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.2pp_2022-08-11.Rdata") 
+}
+if (!exists("mod.sens.fits.2ps")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.2ps_2022-08-11.Rdata") 
+}
+
+# get mod fit only
+mod.fits.2pp <- lapply(mod.sens.fits.2pp, function(x) x[[1]])
+mod.fits.2ps <- lapply(mod.sens.fits.2ps, function(x) x[[1]])
+
+# get pars
+pars.fit.1p <- lapply(mod.fits.1p, "[[", 1)
+pars.fit.2pp <- lapply(mod.fits.2pp, "[[", 1)
+names(pars.fit.2pp) <- names(pars.i.2pp)
+pars.fit.2ps <- lapply(mod.fits.2ps, "[[", 1)
+names(pars.fit.2ps) <- names(pars.i.2ps)
+
+# run fitted models
+# 1p
+mod.fitted.1p <- lapply(seq_along(pars.fit.1p), function(i) {
+  modFun(pars = pars.fit.1p[[i]], In = in.1.ls[[i]], mod = "1p", verbose = FALSE, out = "plot.df")
+})
+names(mod.fitted.1p) <- names(pars.fit.1p)
+# 2pp
+mod.fitted.2pp.i <- lapply(seq_along(pars.i.2pp), function(i) {
+  modFun(pars = pars.i.2pp[[i]], In = in.1.ls[[i]], mod = "2pp", 
+         verbose = FALSE, out = "plot.df")
+})
+names(mod.fitted.2pp.i) <- names(pars.i.2pp)
+mod.fitted.2pp <- lapply(seq_along(pars.fit.2pp), function(i) {
+  modFun(pars = pars.fit.2pp[[i]], In = in.1.ls[[i]], mod = "2pp", 
+         verbose = FALSE, out = "plot.df")
+})
+names(mod.fitted.2pp) <- names(pars.fit.2pp)
+# 2ps
+mod.fitted.2ps.i <- lapply(seq_along(pars.i.2ps), function(i) {
+  modFun(pars = pars.i.2ps[[i]], In = in.1.ls[[i]], mod = "2ps", 
+         verbose = FALSE, out = "plot.df")
+})
+names(mod.fitted.2ps.i) <- names(pars.i.2ps)
+mod.fitted.2ps <- lapply(seq_along(pars.fit.2ps), function(i) {
+  modFun(pars = pars.fit.2ps[[i]], In = in.1.ls[[i]], mod = "2ps", 
+         verbose = FALSE, out = "plot.df")
+})
+names(mod.fitted.2ps) <- names(pars.fit.2ps)
+
+# get ssr
+get.ssr.fx <- function(mod.fit.ls, mod) {
+  data.frame(bind_rows(lapply(mod.fit.ls, "[", "ssr"), .id = "PMeco_depth")) %>%
+  mutate(mod = mod,
+         depth = sapply(strsplit(PMeco_depth, "_"), "[[", 2))
+}
+ssr.1p.df <- get.ssr.fx(mod.fits.1p, "1p")
+ssr.2pp.df <- get.ssr.fx(mod.fits.2pp, "2pp")
+ssr.2ps.df <- get.ssr.fx(mod.fits.2ps, "2ps")
+ 
+# combine ssr & plot
+ssr.df <- rbind(
+  ssr.1p.df,
+  ssr.2pp.df,
+  ssr.2ps.df) %>% 
+  mutate(PMeco = substr(PMeco_depth, 1, 4))
+ssr.df %>%
+  filter(depth == "0-10") %>%
+  ggplot(., aes(PMeco, ssr, fill = mod)) + 
+  geom_col(position = "dodge") + 
+  # facet_grid(rows = vars(depth), scales = "free") + 
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank())
+
+# mean residuals, by var (var_ms)
+var_ms.df.fx <- function(mod.fits.ls, costs, mod) {
+  df <- data.frame(bind_rows(lapply(mod.fits.ls, "[", "var_ms"), .id = "PMeco_depth"))
+  df$var <- rep(costs, nrow(df)/length(costs))
+  df$var_ms <- round(df$var_ms, 5)
+  df$depth <- sapply(strsplit(df$PMeco_depth, "_"), "[[", 2)
+  df$mod <- mod
+  return(df)
+}
+var_ms.1p.df <- var_ms.df.fx(mod.fits.1p, c("resp", "bulkC"), "1p")
+var_ms.2pp.df <- var_ms.df.fx(mod.fits.2pp, c("resp", "bulkC"), "2pp")
+var_ms.2ps.df <- var_ms.df.fx(mod.fits.2ps, c("resp", "bulkC"), "2ps")
+
+# combine var & plot
+var.df <- rbind(
+  var_ms.1p.df,
+  var_ms.2pp.df,
+  var_ms.2ps.df) %>% 
+  mutate(PMeco = substr(PMeco_depth, 1, 4))
+var.df %>%
+  filter(depth == "0-10") %>%
+  ggplot(., aes(PMeco, var_ms, fill = mod)) + 
+  geom_col(position = "dodge") + 
+  facet_grid(rows = vars(var), scales = "free") + 
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank())
+
+# summarize pars
+pars.fit.1p.sum <- lapply(mod.fits.1p, function(x) {
+  ## inspired by summary.modFit (FME)
+  summary.1p.modFit <- function (object, cov = TRUE,...) {
+    param  <- object$par
+    pnames <- names(param)
+    p      <- length(param)
+    covar  <- try(solve(0.5*object$hessian), silent = TRUE)   # unscaled covariance
+    if (!is.numeric(covar)) {
+      message <- "Cannot estimate covariance; system is singular"
+      warning(message)
+      covar <- matrix(data = NA, nrow = p, ncol = p)
+    } else message <- "ok"
+  
+    rownames(covar) <- colnames(covar) <-pnames
+    rdf    <- object$df.residual
+    resvar <- object$ssr / rdf
+    se     <- sqrt(diag(covar) * resvar)
+    names(se) <- pnames
+    tval      <- param / se
+    modVariance <- object$ssr / length(object$residuals)
+  
+    param <- cbind(param, se, tval, 2 * pt(abs(tval), rdf, lower.tail = FALSE))
+    dimnames(param) <- list(pnames, c("Estimate", "Std. Error",
+                                      "t value", "Pr(>|t|)"))
+    if (cov)
+      ans <- list(residuals = object$residuals,
+                  residualVariance = resvar,
+                  sigma = sqrt(resvar),
+                  modVariance = modVariance,
+                  df = c(p, rdf), cov.unscaled = covar,
+                  cov.scaled = covar * resvar,
+                  par = param)
+    else
+      ans <- list(residuals = object$residuals,
+                  residualVariance = resvar,
+                  sigma = sqrt(resvar),
+                  modVariance = modVariance,
+                  df = c(p, rdf),
+                  info = object$info, niter = object$iterations,
+                  stopmess = message,
+                  par = param)
+    class(ans) <- "summary.modFit"
+    ans
+  }
+  summary.1p.modFit(x)
+})
+names(pars.fit.1p.sum) <- names(pars.fit.1p)
+
+pars.fit.2pp.sum <- lapply(mod.fits.2pp, function(x) {
+  tryCatch(summary(x), 
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.2pp.sum) <- names(pars.fit.2pp)
+
+pars.fit.2ps.sum <- lapply(mod.fits.2ps, function(x) {
+  tryCatch(summary(x), 
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.2ps.sum) <- names(pars.fit.2ps)
+
+# compare par fits
+par.fit.df.fx <- function(pars_fit, pars_fit_alt, par_set_nms) {
+  df <- bind_rows(
+    lapply(
+      mapply(rbind, 
+             pars_fit,
+             pars_fit_alt,
+             SIMPLIFY = FALSE), 
+      function(df) {
+        df <- data.frame(df)
+        colnames(df) <- c("kf", "ks", "par3")
+        df$est <- par_set_nms
+        return(df)
+      })
+  )
+  df$PMeco_depth <- rep(names(pars_fit), each = 2)
+  df$PM <- substr(df$PMeco_depth, start = 1, stop = 2)
+  df$eco <- substr(df$PMeco_depth, start = 3, stop = 4)
+  df$depth <- substr(df$PMeco_depth, start = 6, stop = length(df$PMeco_depth))
+  return(df)
+}
+
+# run fx for 2p mods
+pars.fit.2pp.2ps.df <- par.fit.df.fx(pars_fit = pars.fit.2pp,
+                                     pars_fit_alt = pars.fit.2ps,
+                                     par_set_nms = c("2pp", "2ps")) 
+pars.fit.2pp.2ps.PMsum.df <- pars.fit.2pp.2ps.df %>%
+    group_by(PM, est) %>%
+    summarize(across(.cols = c(kf, ks, par3), .fns = list(mean = mean, sd = sd)), .groups = "drop") %>%
+    mutate_if(is.numeric, format, digits = 2)
+pars.fit.2pp.2ps.ECOsum.df <- pars.fit.2pp.2ps.df %>%
+    group_by(eco, est) %>%
+    summarize(across(.cols = c(kf, ks, par3), .fns = list(mean = mean, sd = sd)), .groups = "drop") %>%
+    mutate_if(is.numeric, format, digits = 2)
+```
+
+```{r mod-fit-plot-fxs}
+singleMod.fit.plot.fx <- function(modFit.ls, mod) {
+  lapply(seq_along(modFit.ls), function(i) {
+    PMeco_depth <- names(modFit.ls)[i]
+    con.df <- con.df.fx(PMeco_depth)
+    C14.plot.fx(modFit.ls[[i]], con.df, mod, PMeco_depth = PMeco_depth)
+  })
+}
+
+multiMod.fit.plot.fx <- function(fit1, fit1.name, fit2, fit2.name, fit3 = NULL, fit3.name = NULL) {
+  lapply(seq_along(fit1), function(i) {
+    PMeco_depth <- names(fit1)[i]
+    con.df <- con.df.fx(PMeco_depth)
+    plot.df <- rbind(fit1[[i]],
+                     fit2[[i]],
+                     fit3[[i]])
+    plot.df$Model <- factor(c(rep(fit1.name, nrow(fit1[[i]])),
+                              rep(fit2.name, nrow(fit2[[i]])),
+                              rep(fit3.name, nrow(fit3[[i]]))),
+                            levels = c(fit1.name, fit2.name, fit3.name))
+    return(plot.df %>%
+             filter(pool == "bulkC" | pool == "respiration" | pool == "atm") %>%
+             ggplot(., aes(years, d14C, color = pool)) +
+             geom_path(aes(linetype = Model)) +
+             geom_point(data = con.df, aes(Year, d14c, color = pool), size = 3) +
+             scale_color_manual(
+               name = "Model pool",
+               values = c("atm" = 8,
+                          "bulkC" = "black",
+                          "respiration" = "#e47b1f")) +
+             scale_x_continuous(limits = c(1950, 2022)) +
+             ggtitle(PMeco_depth) +
+             xlab("Year") +
+             ylab(expression(''*Delta*''^14*'C (‰)')) +
+             theme_bw() +
+             theme(panel.grid = element_blank()))
+  })
+}
+```
+
+```{r plot-modFit-curves}
+# all 1p mods
+plot.ls.1p <- singleMod.fit.plot.fx(mod.fitted.1p, "1p")
+
+# all 2pp mods
+plot.ls.2pp <- singleMod.fit.plot.fx(mod.fitted.2pp, "2pp")
+
+# all 2ps mods
+plot.ls.2ps <- singleMod.fit.plot.fx(mod.fitted.2ps, "2ps")
+
+# plot both fits
+multiMod.fit.plot.fx(mod.fitted.2pp[ix.10], "2pp", mod.fitted.2ps[ix.10], "2ps", mod.fitted.1p, "1p")
+
+# plot initial vs. optimized fit
+multiMod.fit.plot.fx(
+  mod.fitted.2pp[ix.10], "2pp, fitted", 
+  lapply(pars.i.2pp[ix.10], function(x) 
+    modFun(x, "2pp", 1, out = "", verbose = FALSE)), "2pp, initial")
+
+multiMod.fit.plot.fx(
+  mod.fitted.2ps[ix.10], "2ps, fitted", 
+  lapply(pars.i.2ps[ix.10], function(x) 
+    modFun(x, "2ps", 1, out = "", verbose = FALSE)), "2ps, initial")
+```
+
+```{r test-alt-mod-funs}
+mod.sens.fits.2pp <- mod.fits.fx2(mod = "2pp",
+                                 pars = pars.i.2pp,
+                                 In = in.1.ls,
+                                 sub = ix.10,
+                                 upper = c(1, 1, 1),
+                                 lower = c(0, 0, 0),
+                                 cost = "14C")
+names(mod.sens.fits.2pp) <- names(pars.i.2pp)[ix.10]
+```
