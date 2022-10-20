@@ -129,6 +129,7 @@ for (i in seq_along(Datm$Date)) {
 2. Run modfit using bulk and respired 14C time series data
 3. Run bayesian parameter optimization
 4. Reject models w/ stocks outside ±2SE of measured values
+  - Then what?
 5. Adjust inputs w/ modeled stocks and reject models w/ unrealistic inputs
     * If inputs are not realistic [how to come up with realistic ranges?], may have to implement some constraints on parameter optimization, e.g. if (In > max | In < min) { error } else { fit pars}. Could calculate rejection rate associated with this process...
 6. Compare models using AIC; other metrics? E.g. collinearity of parameters, ssr, bias, etc.
@@ -139,7 +140,7 @@ for (i in seq_along(Datm$Date)) {
 
 # Questions
 1. How to set acceptable ranges for inputs?
-2. How to deal with lag times? Would be nice to avoid fitting a lag parameter. Options: could set lag by depth, but likely the optimal lag value will vary by site. Could fit lag parameter for 1p models. Would this then be relevant for more complex systems?
+2. How to deal with lag times? Would be nice to avoid fitting a lag parameter. Options: could set lag by depth, but likely the optimal lag value will vary by site.
 
 **Should copy relevant code for preparing obs.bulk.14c, obs.resp.14c**
 
@@ -164,9 +165,27 @@ names(sra.2009.ls) <- pro_nms
 ```
 
 # load pre-built bulk, respired 14C objs
-```{r obs-blk-rsp}
+```{r obs-blk-rsp-fpm}
 load("/Users/jeff/sra-ts/source/obs.resp.14c.RData")
 load("/Users/jeff/sra-ts/source/obs.bulk.14c.RData")
+load("dens.01.09.19.sp.df.RData")
+
+# # pull out 2009 observations of bulk 14C for BSwf_10-20, BSwf_20-30 (much higher than either 2001 or 2019)
+# # doesn't actually help...
+# obs.bulk.14c[17:18] <- lapply(obs.bulk.14c[17:18], function(x) x[-which(x$time == 2009.5), ])
+
+# create fpom list for additional/replacement constraints
+obs.fpom.14c <- lapply(split(dens.01.09.19.sp.df, dens.01.09.19.sp.df$PMeco_depth), function(df) {
+  df %>%
+    filter(frc == "fPOM") %>%
+    mutate(time = year + .5,
+           resp = frc_14c) %>%
+    select(time, resp) %>%
+    data.frame
+}) 
+
+# replace GRrf_10-20, GRrf_20-30 elements in obs.resp.14c w/ fPOM data; NB 0-10 cm resp data comparable to fPOM
+obs.resp.14c[23:24] <- obs.fpom.14c[23:24]
 ```
 
 # SOC stocks
@@ -287,16 +306,22 @@ atm14c.01.09.19 <- data.frame(
            mean(atm14c[which(atm14c$Year.AD > 2019 & atm14c$Year.AD < 2020), "Delta14C"])))
 
 # constraint df fx
-con.df.fx <- function(PMeco_depth) {
+con.df.fx <- function(PMeco_depth, fit_LF = FALSE) {
   bulk.df <- obs.bulk.14c[[PMeco_depth]]
   resp.df <- obs.resp.14c[[PMeco_depth]]
+  fpom.df <- obs.fpom.14c[[PMeco_depth]]
+  
+  if (fit_LF) {
+    resp.df[which(resp.df$PMeco == "GRrf"), ]
+  }
+  
   return(
     con.df <- data.frame(pool = c(rep("bulkC", nrow(bulk.df)), rep("respiration", nrow(resp.df))),
                          d14c = c(bulk.df$bulkC, resp.df$resp),
                          Year = c(bulk.df$time, resp.df$time)))
 }
 
-# C stocks function
+# C stocks function *assumed lag not in 'pars'*
 soc.fx <- function(pars, mod, In, out = "pools", mod_mat = FALSE) {
 
   # steady-state stock calc fx
@@ -380,15 +405,33 @@ soc.fx <- function(pars, mod, In, out = "pools", mod_mat = FALSE) {
 }
 
 # model fx
-modFun <- function(pars, mod, In, lag = 0, pass = TRUE, verbose = TRUE, out = "modFit", PMeco_depth = NULL, var_14c = "d14c") {
+modFun <- function(pars, mod, In, lag = 0, pass = TRUE, verbose = TRUE, out = "modFit", PMeco_depth = NULL, var_14c = "d14c", fit_lag = FALSE) {
+  
+  # get lag, set pars
+  if (fit_lag) {
+    if (grepl("2", mod)) {
+      PARS <- pars[1:3]
+      lag <- pars[4]
+    } else if (grepl("3", mod)) {
+      PARS <- pars[1:5]
+      lag <- pars[6]
+    } else {
+      # 1p
+      PARS <- pars[1]
+      lag <- pars[2]
+    } 
+  } else {
+    PARS <- pars
+    lag <- lag
+  }
   
   # run soc.fx to get: mod_mat [[1]], in_vector [[2]], steady-state C [[3]], and pool names [[4]]
-  soc.fx_out <- soc.fx(pars, mod, In, mod_mat = TRUE)
+  soc.fx_out <- soc.fx(PARS, mod, In, mod_mat = TRUE)
   ss.cstock <- soc.fx_out[[3]]
   
   # check for negative stocks
   if (any(ss.cstock <= 0)) {
-    cat("pool ", which(ss.cstock <= 0), "< 0")
+    cat("pool ", which(ss.cstock <= 0), "< 0\n")
   }
   
   # time index
@@ -396,6 +439,8 @@ modFun <- function(pars, mod, In, lag = 0, pass = TRUE, verbose = TRUE, out = "m
   
   # check for 1p mod
   if (mod == "1p") {
+    
+    # model
     model <- OnepModel14(
       t = Datm$Date[ix.t],
       k = soc.fx_out[[1]],
@@ -439,7 +484,7 @@ modFun <- function(pars, mod, In, lag = 0, pass = TRUE, verbose = TRUE, out = "m
     }
     
     # run model
-     model <- mod.fx(
+    model <- mod.fx(
       A = soc.fx_out[[1]],
       t = Datm$Date[ix.t],
       in_vector = soc.fx_out[[2]],
@@ -448,7 +493,7 @@ modFun <- function(pars, mod, In, lag = 0, pass = TRUE, verbose = TRUE, out = "m
       inputFc = Datm,
       lag = lag,
       pass = pass) 
-    }
+  }
 
   # get mod values
   C14m <- getF14C(model)
@@ -470,7 +515,7 @@ modFun <- function(pars, mod, In, lag = 0, pass = TRUE, verbose = TRUE, out = "m
     data.frame(
       time = Datm$Date[ix.t],
       resp = C14r,
-      bulkC = rowSums(Ctot[1, ] / sum(Ctot[1, ]) * C14p),
+      bulkC = C14m,
       cStock = sum(Ctot[1, ]))
   } else {
     
@@ -520,10 +565,10 @@ C14.plot.fx <- function(plot.df, con.df, mod, pool_filter = NULL, PMeco_depth) {
   
   # plot
   plot.df %>%
-    ggplot(., aes(years, d14C, color = pool, linetype = pool)) +
-    geom_path() +
+    ggplot(., aes(years, d14C)) +
+    geom_path(aes(color = pool, linetype = pool)) +
     geom_point(data = con.df, aes(Year, d14c, color = pool), size = 3) +
-    scale_color_manual(name = "Pool", values = cvals) +
+    scale_color_manual(name = "Pool", values = cvals, limits = force) +
     scale_linetype_manual(values = lvals) +
     scale_x_continuous(limits = c(1950, 2022)) +
     ggtitle(paste(PMeco_depth, mod)) +
@@ -537,14 +582,20 @@ C14.plot.fx <- function(plot.df, con.df, mod, pool_filter = NULL, PMeco_depth) {
 
 # Load initial parameter lists (1p, 2pp, 2ps, 3pp, 3ps)
 ```{r pars-i-1p}
-load("pars.i.1p.RData")
-load("pars.i.2pp.RData")
-load("pars.i.2ps.RData")
+if (!exists("pars.i.1p")) {
+  load("../data/derived/modFit_pars/pars.i.1p.RData")
+}
+if (!exists("pars.i.2pp")) {
+  load("../data/derived/modFit_pars/pars.i.2pp.RData")
+}
+if (!exists("pars.i.2ps")) {
+  load("../data/derived/modFit_pars/pars.i.2ps.RData")
+}
 ```
 
 # Optimize parameter sets
 ```{r modFit-fx-multipool}
-mod.fits.fx <- function(pars, mod, In, sub, lag = 0, upper, lower, cost, var_14c = "d14c") {
+mod.fits.fx <- function(pars, mod, In, sub, lag, upper, lower, cost, maxit = 500, method = "Nelder-Mead", var_14c = "d14c", fit_lag = FALSE) {
   
   if (var_14c == "d14c") {
     obs.bulk <- obs.bulk.14c
@@ -563,34 +614,42 @@ mod.fits.fx <- function(pars, mod, In, sub, lag = 0, upper, lower, cost, var_14c
     
     # set vars
     PMeco_depth <- names(pars)[sub][i]
-    pars <- pars[sub][[i]]
+    PARS <- pars[sub][[i]]
     
     # Set input
     In <- In[sub][[i]]
     
     # define cost function
     if (cost == "14C + cStock") {
-      mod.Cost <- function(pars) {
-        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
+      mod.Cost <- function(PARS) {
+        modelOutput <- modFun(PARS, mod, In, lag, verbose = FALSE, var_14c = var_14c, fit_lag = fit_lag)
         cost1 <- modCost(model = modelOutput, obs = obs.bulk[sub][[i]], scaleVar = TRUE)
         cost2 <- modCost(model = modelOutput, obs = obs.resp[sub][[i]], scaleVar = TRUE, cost = cost1) 
         return(modCost(model = modelOutput, obs = obs.cStock[sub][[i]], cost = cost2))
       }
     } else if (cost == "14C") {
-      mod.Cost <- function(pars) {
-        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
+      mod.Cost <- function(PARS) {
+        modelOutput <- modFun(PARS, mod, In, lag, verbose = FALSE, var_14c = var_14c, fit_lag = fit_lag)
         cost1 <- modCost(model = modelOutput, obs = obs.bulk[sub][[i]], scaleVar = TRUE)
         return(modCost(model = modelOutput, obs = obs.resp[sub][[i]], scaleVar = TRUE, cost = cost1))
       } 
     }
     
+    # set control list for optim method
+    if (method == "Nelder-Mead") {
+      ctl <- list(maxit = maxit)
+    } else {
+      ctl <- NULL
+    }
+    
     # fit pars
     fit <- tryCatch(
       modFit(f = mod.Cost,
-             p = pars,
-             method = 'Nelder-Mead',
+             p = PARS,
+             method = method,
              lower = lower,
-             upper = upper),
+             upper = upper,
+             control = ctl),
       error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})      
       
     # parameter sensitivity
@@ -607,7 +666,7 @@ mod.fits.fx <- function(pars, mod, In, sub, lag = 0, upper, lower, cost, var_14c
 ```
 
 ```{r modFit-fx-1pool}
-mod.fits.1p.fx <- function(par.ls, var_14c = "d14c") {
+mod.fits.1p.fx <- function(par.ls, lag = 0, var_14c = "d14c", fit_lag = FALSE) {
   
   # set constraint variable
   if (var_14c == "d14c") {
@@ -623,21 +682,26 @@ mod.fits.1p.fx <- function(par.ls, var_14c = "d14c") {
 
   # start timer and print PMeco_depth
   start <- Sys.time()
-  cat(paste0(names(pars)[i], " parameter fitting\n"))
+  cat(paste0(names(par.ls)[i], " parameter fitting\n"))
   
-  # get k
-  k <- par.ls[[i]]
-
+  # get pars
+  pars <- par.ls[[1]]
+  
   # model fx
-  modFun_1p <- function(k, var_14c = var_14c) {
+  modFun_1p <- function(pars, lag = lag, var_14c = var_14c) {
+    
+    # time index
+    ix.t <- c((lag + 1):nrow(Datm))
+    
+    # define model
     mod <- OnepModel14(
-      t = Datm$Date,
-      k = k,
-      C0 = 1 / k,
-      F0_Delta14C = Delta14C_from_AbsoluteFractionModern(fm(k)),
+      t = Datm$Date[ix.t],
+      k = pars,
+      C0 = 1 / pars,
+      F0_Delta14C = Delta14C_from_AbsoluteFractionModern(fm(pars)),
       In = 1,
       inputFc = Datm, 
-      lag = 0,
+      lag = lag,
       pass = FALSE)
   C14 <- getF14C(mod)
   if (var_14c == "fm") {
@@ -652,36 +716,36 @@ mod.fits.1p.fx <- function(par.ls, var_14c = "d14c") {
   }
   
   # define cost fx
-  mod.Cost <- function(k) {
-        modelOutput <- modFun_1p(k, var_14c = var_14c)
+  mod.Cost <- function(pars) {
+        modelOutput <- modFun_1p(pars, var_14c = var_14c)
         cost1 <- modCost(model = modelOutput, obs = obs.bulk[[i]], scaleVar = TRUE)
         return(modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$model)
   } 
   
   # return optimization
-  opt <- optim(par = k,
-               fn = mod.Cost,
-               method = "Brent",
-               lower = 0,
-               upper = 1,
-               hessian = TRUE)
-  
-  # rename "value" to ssr
-  names(opt)[which(names(opt) == "value")] <- "ssr"
-  
-  # retrieve variance and residuals from mod.Cost
-  modelOutput <- modFun_1p(opt$par, var_14c = var_14c)
-  cost1 <- modCost(model = modelOutput, obs = obs.bulk[[i]], scaleVar = TRUE)
-  mod.Cost.var <- modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$var
-  mod.Cost.res <- modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$residuals
-  
-  # add to opt and return
-  opt$var_ms <- mod.Cost.var$SSR * mod.Cost.var$scale
-  names(opt$var_ms) <- c("resp", "bulkC")
-  opt$obs.mod <- mod.Cost.res[ , c("obs", "mod", "name")]
-  opt$df.residual <- nrow(mod.Cost.res) - length(k) - 1
-  opt$residuals <- mod.Cost.res$res
-  names(opt$residuals) <- mod.Cost.res$name
+   opt <- optim(par = pars,
+                fn = mod.Cost,
+                method = "Brent",
+                lower = 0,
+                upper = 1,
+                hessian = TRUE) 
+       
+    # rename "value" to ssr
+    names(opt)[which(names(opt) == "value")] <- "ssr"
+    
+    # retrieve variance and residuals from mod.Cost
+    modelOutput <- modFun_1p(opt$par, var_14c = var_14c)
+    cost1 <- modCost(model = modelOutput, obs = obs.bulk[[i]], scaleVar = TRUE)
+    mod.Cost.var <- modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$var
+    mod.Cost.res <- modCost(model = modelOutput, obs = obs.resp[[i]], scaleVar = TRUE, cost = cost1)$residuals
+    
+    # add to opt and return
+    opt$var_ms <- mod.Cost.var$SSR * mod.Cost.var$scale
+    names(opt$var_ms) <- c("resp", "bulkC")
+    opt$obs.mod <- mod.Cost.res[ , c("obs", "mod", "name")]
+    opt$df.residual <- nrow(mod.Cost.res) - length(k) - 1
+    opt$residuals <- mod.Cost.res$res
+    names(opt$residuals) <- mod.Cost.res$name
     
   # End timer and print elapsed time
   end <- Sys.time()
@@ -692,247 +756,341 @@ mod.fits.1p.fx <- function(par.ls, var_14c = "d14c") {
 }
 ```
 
-```{r opt-1p-mod}
-# 1p fits
-mod.fits.1p <- mod.fits.1p.fx(pars.i.1p)
-names(mod.fits.1p) <- names(pars.i.1p)
-save(mod.fits.1p, file = paste0("../data/derived/modFit_pars/", "mod.fits.1p", "_", Sys.Date(), ".RData"))
+```{r opt-modFit, eval = FALSE}
+# # Note: code commented out to prevent expensive computation!
+# # 1p fits
+# mod.fits.1p <- mod.fits.1p.fx(pars.i.1p)
+# names(mod.fits.1p) <- names(pars.i.1p)
+# save(mod.fits.1p, file = paste0("../data/derived/modFit_pars/", "mod.fits.1p", "_", Sys.Date(), ".RData"))
+# 1p fits w/ lag
+# mod.fits.1p.lag <- mod.fits.1p.fx(pars.i.1p[ix.10])
+# names(mod.fits.1p.L10) <- names(pars.i.1p[ix.10])
+# save(mod.fits.1p.lag, file = paste0("../data/derived/modFit_pars/", "mod.fits.1p.lag", "_", Sys.Date(), ".RData"))
 
-# 2pp fit
-mod.sens.fits.2pp <- mod.fits.fx(
-  pars = pars.i.2pp, 
+# # 2pp fit
+# mod.sens.fits.2pp <- mod.fits.fx(
+#   pars = pars.i.2pp,
+#   mod = "2pp",
+#   In = in.1.ls,
+#   sub = 1:27,
+#   lag = 0,
+#   upper = c(1, 1, 1),
+#   lower = c(0, 0, 0),
+#   cost = "14C"
+# )
+# names(mod.sens.fits.2pp) <- names(pars.i.2pp)
+# save(mod.sens.fits.2pp, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2pp", "_", Sys.Date(), ".RData"))
+# # w/ lag
+# pars.i.2pp.lag <- lapply(pars.i.2pp, function(x) c(x, 10)) # start w/ 10 yr
+# mod.sens.fits.2pp.lag <- mod.fits.fx(
+#   pars = pars.i.2pp.lag,
+#   mod = "2pp",
+#   In = in.1.ls,
+#   sub = 1:27,
+#   upper = c(1, 1, 1, 30), # max lag = 30 y (cf. 40 y for Koarashi et al. 2012 w/ depth max = 60 cm)
+#   lower = c(0, 0, 0, 0),
+#   cost = "14C",
+#   fit_lag = TRUE
+# )
+# names(mod.sens.fits.2pp.lag) <- names(pars.i.2pp)
+# save(mod.sens.fits.2pp.lag, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2pp.lag", "_", Sys.Date(), ".RData"))
+
+mod.sens.fits.2pp.lag100 <- mod.fits.fx(
+  pars = pars.i.2pp.lag,
   mod = "2pp",
   In = in.1.ls,
   sub = 1:27,
-  lag = 0,
-  upper = c(1, 1, 1),
-  lower = c(0, 0, 0),
-  cost = "14C"
+  upper = c(1, 1, 1, 100),
+  lower = c(0, 0, 0, 0),
+  cost = "14C",
+  fit_lag = TRUE
 )
-names(mod.sens.fits.2pp) <- names(pars.i.2pp)
-save(mod.sens.fits.2pp, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2pp", "_", Sys.Date(), ".RData"))
+names(mod.sens.fits.2pp.lag100) <- names(pars.i.2pp)
+save(mod.sens.fits.2pp.lag100, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2pp.lag100", "_", Sys.Date(), ".RData"))
 
+mod.sens.fits.3pp <- mod.fits.fx(
+  pars = pars.i.3pp,
+  mod = "3pp",
+  In = in.1.ls,
+  sub = 1:27,
+  upper = c(1, 1, 1, 1, 1),
+  lower = c(0, 0, 0, 0, 0),
+  cost = "14C",
+  lag = 0,
+  fit_lag = FALSE
+)
+names(mod.sens.fits.3pp) <- names(pars.i.3pp)
+save(mod.sens.fits.3pp, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.3pp", "_", Sys.Date(), ".RData"))
 
-# test long data format
-obs.bulk.14c.l <- lapply(obs.bulk.14c, function(x) {
-  x %>% 
-    group_by(time) %>% 
-    summarize(across(bulkC, .fns = list(mean = mean, sd = sd)), n = n()) %>%
-    mutate(name = "bulkC",
-           err = bulkC_sd / sqrt(n)) %>%
-    mutate(err = ifelse(is.na(err), mean(err, na.rm = TRUE), err)) %>%
-    rename(bulkC = bulkC_mean) %>%
-    select(name, time, bulkC, err) %>%
-    data.frame
-})
-obs.resp.14c.l <- lapply(obs.resp.14c, function(x) {
-  x %>% 
-    group_by(time) %>% 
-    summarize(across(resp, .fns = list(mean = mean, sd = sd)), n = n()) %>%
-    mutate(name = "resp",
-           err = resp_sd / sqrt(n)) %>%
-    mutate(err = ifelse(is.na(err), mean(err, na.rm = TRUE), err)) %>%
-    rename(resp = resp_mean) %>%
-    select(name, time, resp, err) %>%
-    data.frame
-})
+pars.i.3pp.lag <- lapply(pars.i.3pp, function(x) c(x, 0)) # start w/ 0 
+mod.sens.fits.3pp.lag <- mod.fits.fx(
+  pars = pars.i.3pp.lag,
+  mod = "3pp",
+  In = in.1.ls,
+  sub = 1:27,
+  upper = c(1, 1, 1, 1, 1, 100),
+  lower = c(0, 0, 0, 0, 0, 0),
+  cost = "14C",
+  fit_lag = TRUE
+)
+names(mod.sens.fits.3pp.lag) <- names(pars.i.3pp.lag)
+save(mod.sens.fits.3pp.lag, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.3pp.lag", "_", Sys.Date(), ".RData"))
 
-# test fraction modern as constraint
-obs.bulk.fm <- lapply(obs.bulk.14c, function(x) {
-  for (i in 1:nrow(x)) {
-    x$bulkC[i] <- convert_fm_d14c(d14c = x$bulkC[i], obs_date_y = x$time[i], verbose = FALSE) 
-  }
-  return(x)
-})
-obs.resp.fm <- lapply(obs.resp.14c, function(x) {
-  for (i in 1:nrow(x)) {
-    x$resp[i] <- convert_fm_d14c(d14c = x$resp[i], obs_date_y = x$time[i], verbose = FALSE) 
-  }
-  return(x)
-})
+pars.i.3pp.lag2 <- lapply(pars.i.3pp, function(x) c(x, 10)) # start w/ 10 
+mod.sens.fits.3pp.lag2 <- mod.fits.fx(
+  pars = pars.i.3pp.lag2,
+  mod = "3pp",
+  In = in.1.ls,
+  sub = 1:27,
+  upper = c(1, 1, 1, 1, 1, 100),
+  lower = c(0, 0, 0, 0, 0, 0),
+  cost = "14C",
+  fit_lag = TRUE
+)
+names(mod.sens.fits.3pp.lag2) <- names(pars.i.3pp.lag2)
+save(mod.sens.fits.3pp.lag2, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.3pp.lag2", "_", Sys.Date(), ".RData"))
 
-# std cost fx w/ additional optional arguments
-mod.Cost.14c <- function(pars, mod, In = 1, lag = 0, sub = ix.10, i, verbose = FALSE, scaleVar = TRUE, wt = "none", var_14c = "d14c") {
-  
-  if (var_14c == "d14c") {
-    obs.bulk <- obs.bulk.14c
-    obs.resp <- obs.resp.14c
-  } else {
-    obs.bulk <- obs.bulk.fm
-    obs.resp <- obs.resp.fm
-  }
-        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
-        cost1 <- modCost(model = modelOutput, obs = obs.bulk[sub][[i]], weight = wt, scaleVar = scaleVar)
-        return(modCost(model = modelOutput, obs = obs.resp[sub][[i]], weight = wt, scaleVar = scaleVar, cost = cost1))
-}
+# ## check for convergence
+# # max iterations check:
+# cvg1 <- which(unlist(lapply(lapply(mod.sens.fits.2pp.lag, "[[", 1), "[[", "convergence")) == 1)
+# cvg1.redo <- mod.fits.fx(
+#   pars = pars.i.2pp.lag,
+#   mod = "2pp",
+#   In = in.1.ls,
+#   sub = cvg1,
+#   upper = c(1, 1, 1, 30), # max lag = 30 y (cf. 40 y for Koarashi et al. 2012 w/ depth max = 60 cm)
+#   lower = c(0, 0, 0, 0),
+#   maxit = 1000,
+#   cost = "14C",
+#   fit_lag = TRUE
+# )
+# names(cvg1.redo) <- names(mod.sens.fits.2pp.lag[cvg1])
+# # replace samples
+# mod.sens.fits.2pp.lag[cvg1] <- cvg1.redo
+# save(mod.sens.fits.2pp.lag, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2pp.lag", "_", Sys.Date(), ".RData"))
+# degeneracy check:
+# cvg10.2pp.lag <- which(unlist(lapply(lapply(mod.sens.fits.2pp.lag, "[[", 1), "[[", "convergence")) == 10)
+# method "Pseudo" isn't working---singular matrix issues; collinear pars?
+# cvg10.redo <- mod.fits.fx(
+#   pars = pars.i.2pp.lag,
+#   mod = "2pp",
+#   In = in.1.ls,
+#   sub = cvg10,
+#   upper = c(1, 1, 1, 30), # max lag = 30 y (cf. 40 y for Koarashi et al. 2012 w/ depth max = 60 cm)
+#   lower = c(0, 0, 0, 0),
+#   method = "Pseudo",
+#   cost = "14C",
+#   fit_lag = TRUE
+# )
 
-# long format cost fx w/ additional optional arguments
-mod.Cost.14c2 <- function(pars, mod, In = 1, lag = 0, sub = ix.10, i, verbose = FALSE, scaleVar = TRUE, var_14c = "d14c") {
-        modelOutput <- modFun(pars, mod, In, lag, verbose = FALSE, var_14c = var_14c)
-        cost1 <- modCost(model = modelOutput, obs = obs.bulk.14c.l[sub][[i]], y = "bulkC", err = "err", scaleVar = scaleVar)
-        return(modCost(model = modelOutput, obs = obs.resp.14c.l[sub][[i]], y = "resp", err = "err", scaleVar = scaleVar, cost = cost1))
-}
+# # 2ps fit
+# mod.sens.fits.2ps <- mod.fits.fx(
+#   pars = pars.i.2ps,
+#   mod = "2ps",
+#   In = in.1.ls,
+#   sub = 1:27,
+#   lag = 0,
+#   upper = c(1, 1, 1),
+#   lower = c(0, 0, 0),
+#   cost = "14C"
+# )
+# names(mod.sens.fits.2ps) <- names(pars.i.2ps)
+# save(mod.sens.fits.2ps, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2ps", "_", Sys.Date(), ".RData"))
+# # w/ lag
+# pars.i.2ps.lag <- lapply(pars.i.2ps, function(x) c(x, 10)) # start w/ 10 yr
+# mod.sens.fits.2ps.lag <- mod.fits.fx(
+#   pars = pars.i.2ps.lag,
+#   mod = "2ps",
+#   In = in.1.ls,
+#   sub = 1:27,
+#   upper = c(1, 1, 1, 30), # max lag = 30 y (cf. 40 y for Koarashi et al. 2012 w/ depth max = 60 cm)
+#   lower = c(0, 0, 0, 0),
+#   cost = "14C",
+#   fit_lag = TRUE
+# )
+# names(mod.sens.fits.2ps.lag) <- names(pars.i.2ps)
+# save(mod.sens.fits.2ps.lag, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2ps.lag", "_", Sys.Date(), ".RData"))
 
-# costs for initial pars, standard cost fx
-ANpp.10.2pp.modCost <- mod.Cost.14c(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1)
-# costs for fitted pars, standard cost fx
-ANpp.10.2pp.modCost.f <- mod.Cost.14c(ANpp.10.2pp.modFit$par, mod = "2pp", i = 1)
-
-# costs for initial pars, fm for costs
-ANpp.10.2pp.modCost.fm <- mod.Cost.14c(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, var_14c = "fm")
-# costs for fitted pars, standard cost fx
-ANpp.10.2pp.modCost.fm.f <- mod.Cost.14c(ANpp.10.2pp.modFit$par, mod = "2pp", i = 1, var_14c = "fm")
-
-# costs for initial pars, standard cost fx w/ errors weighted by reciprocal of sd
-ANpp.10.2pp.modCost.w <- mod.Cost.14c(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, wt = "std", scaleVar = FALSE)
-# costs for fitted pars, standard cost fx
-ANpp.10.2pp.modCost.w.f <- mod.Cost.14c(ANpp.10.2pp.modFit.w$par, mod = "2pp", wt = "std", i = 1, scaleVar = FALSE)
-
-# costs for initial pars, long format cost fx, scaleVar = T
-ANpp.10.2pp.modCost2 <- mod.Cost.14c2(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, scaleVar = TRUE)
-# costs for fitted pars, long format cost fx, scaleVar = T
-ANpp.10.2pp.modCost2.f <- mod.Cost.14c2(ANpp.10.2pp.modFit2$par, mod = "2pp", i = 1, scaleVar = TRUE)
-
-# costs for initial pars, long format cost fx, scaleVar = F
-ANpp.10.2pp.modCost2.1 <- mod.Cost.14c2(pars.i.2pp$`ANpp_0-10`, mod = "2pp", i = 1, scaleVar = FALSE)
-# costs for fitted pars, long format cost fx, scaleVar = T
-ANpp.10.2pp.modCost2.1.f <- mod.Cost.14c2(ANpp.10.2pp.modFit2.1$par, mod = "2pp", i = 1, scaleVar = FALSE)
-
-# fit model w/ initial pars and std cost fx
-ANpp.10.2pp.modFit <- modFit(f = mod.Cost.14c,
-                             p = pars.i.2pp$`ANpp_0-10`,
-                             mod = "2pp",
-                             sub = ix.10, 
-                             i = 1,
-                             method = 'Nelder-Mead',
-                             lower = c(0, 0, 0),
-                             upper = c(1, 1, 1))
-ANpp.10.2pp.modFitted <- modFun(pars = ANpp.10.2pp.modFit$par, 
-                                mod = "2pp",
-                                In = 1,
-                                out = "")
-C14.plot.fx(ANpp.10.2pp.modFitted, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-
-# fit model w/ initial pars and fm cost fx
-ANpp.10.2pp.modFit.fm <- modFit(f = mod.Cost.14c,
-                                p = pars.i.2pp$`ANpp_0-10`,
-                                var_14c = "fm",
-                                mod = "2pp",
-                                sub = ix.10, 
-                                i = 1,
-                                method = 'Nelder-Mead',
-                                lower = c(0, 0, 0),
-                                upper = c(1, 1, 1))
-ANpp.10.2pp.modFitted.fm <- modFun(pars = ANpp.10.2pp.modFit.fm$par, 
-                                   mod = "2pp",
-                                   In = 1,
-                                   out = "")
-C14.plot.fx(ANpp.10.2pp.modFitted.fm, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-
-# fit model w/ initial pars and fm cost fx + err weighting
-ANpp.10.2pp.modFit.fm.w <- modFit(f = mod.Cost.14c,
-                                  p = pars.i.2pp$`ANpp_0-10`,
-                                  var_14c = "fm",
-                                  mod = "2pp",
-                                  wt = "std",
-                                  sub = ix.10, 
-                                  i = 1,
-                                  method = 'Nelder-Mead',
-                                  lower = c(0, 0, 0),
-                                  upper = c(1, 1, 1))
-ANpp.10.2pp.modFitted.fm.w <- modFun(pars = ANpp.10.2pp.modFit.fm.w$par, 
-                                     mod = "2pp",
-                                     In = 1,
-                                     out = "")
-C14.plot.fx(ANpp.10.2pp.modFitted.fm.w, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-
-# fit mod w/ initial pars and std cost fx + std weighting
-ANpp.10.2pp.modFit.w <- modFit(f = mod.Cost.14c,
-                              p = pars.i.2pp$`ANpp_0-10`,
-                              wt = "std",
-                              mod = "2pp",
-                              sub = ix.10, 
-                              i = 1,
-                              method = 'Nelder-Mead',
-                              lower = c(0, 0, 0),
-                              upper = c(1, 1, 1))
-ANpp.10.2pp.modFitted.w <- modFun(pars = ANpp.10.2pp.modFit.w$par, 
-                                mod = "2pp",
-                                In = 1,
-                                out = "")
-
-# fit mod w/ initial pars and long format cost fx
-ANpp.10.2pp.modFit2 <- modFit(f = mod.Cost.14c2,
-                              p = pars.i.2pp$`ANpp_0-10`,
-                              mod = "2pp",
-                              sub = ix.10, 
-                              i = 1,
-                              method = 'Nelder-Mead',
-                              lower = c(0, 0, 0),
-                              upper = c(1, 1, 1))
-ANpp.10.2pp.modFitted2 <- modFun(pars = ANpp.10.2pp.modFit2$par, 
-                                mod = "2pp",
-                                In = 1,
-                                out = "")
-
-
-ANpp.10.2pp.modFit2.1 <- modFit(f = mod.Cost.14c2,
-                              p = pars.i.2pp$`ANpp_0-10`,
-                              mod = "2pp",
-                              sub = ix.10, 
-                              i = 1,
-                              method = 'Nelder-Mead',
-                              lower = c(0, 0, 0),
-                              upper = c(1, 1, 1))
-ANpp.10.2pp.modFitted2.1 <- modFun(pars = ANpp.10.2pp.modFit2.1$par, 
-                                mod = "2pp",
-                                In = 1,
-                                out = "")
-C14.plot.fx(ANpp.10.2pp.modFitted, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-C14.plot.fx(ANpp.10.2pp.modFitted.w, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-C14.plot.fx(ANpp.10.2pp.modFitted2, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-C14.plot.fx(ANpp.10.2pp.modFitted2.1, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-C14.plot.fx(mod.fitted.2pp.i$`ANpp_0-10`, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-C14.plot.fx(mod.fitted.2pp$`ANpp_0-10`, con.df.fx("ANpp_0-10"), mod = "2pp", PMeco_depth = "ANpp_0-10")
-
-
-# 2ps fit
-mod.sens.fits.2ps <- mod.fits.fx(
-  pars = pars.i.2ps, 
+mod.sens.fits.2ps.lag100 <- mod.fits.fx(
+  pars = pars.i.2ps.lag,
   mod = "2ps",
   In = in.1.ls,
   sub = 1:27,
-  lag = 0,
-  upper = c(1, 1, 1),
-  lower = c(0, 0, 0),
-  cost = "14C"
+  upper = c(1, 1, 1, 100), # max lag = 30 y (cf. 40 y for Koarashi et al. 2012 w/ depth max = 60 cm)
+  lower = c(0, 0, 0, 0),
+  cost = "14C",
+  fit_lag = TRUE
 )
-names(mod.sens.fits.2ps) <- names(pars.i.2ps)
-save(mod.sens.fits.2ps, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2ps", "_", Sys.Date(), ".RData"))
+names(mod.sens.fits.2ps.lag100) <- names(pars.i.2ps)
+save(mod.sens.fits.2ps.lag100, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2ps.lag100", "_", Sys.Date(), ".RData"))
+
+if (!exists("pars.i.3ps")) {
+ load("/Users/jeff/sra-frc/source/pars-init-3ps.R") 
+}
+mod.sens.fits.3ps <- mod.fits.fx(
+  pars = pars.i.3ps,
+  mod = "3ps",
+  In = in.1.ls,
+  sub = 1:27,
+  upper = c(1, 1, 1, 1, 1),
+  lower = c(0, 0, 0, 0, 0),
+  cost = "14C",
+  lag = 0,
+  fit_lag = FALSE
+)
+names(mod.sens.fits.3ps) <- names(pars.i.3ps)
+save(mod.sens.fits.3ps, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.3ps", "_", Sys.Date(), ".RData"))
+
+pars.i.3ps.lag <- lapply(pars.i.3ps, function(x) c(x, 10)) # start w/ 10 
+mod.sens.fits.3ps.lag <- mod.fits.fx(
+  pars = pars.i.3ps.lag,
+  mod = "3ps",
+  In = in.1.ls,
+  sub = 1:27,
+  upper = c(1, 1, 1, 1, 1, 100),
+  lower = c(0, 0, 0, 0, 0, 0),
+  cost = "14C",
+  fit_lag = TRUE
+)
+names(mod.sens.fits.3ps.lag) <- names(pars.i.3ps.lag)
+save(mod.sens.fits.3ps.lag, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.3ps.lag", "_", Sys.Date(), ".RData"))
+
+# ## check for convergence
+# # # max iterations check:
+# cvg1 <- which(unlist(lapply(lapply(mod.sens.fits.2ps.lag, "[[", 1), "[[", "convergence")) == 1)
+# cvg1.redo.2ps.lag <- mod.fits.fx(
+#   pars = pars.i.2ps.lag,
+#   mod = "2ps",
+#   In = in.1.ls,
+#   sub = cvg1,
+#   upper = c(1, 1, 1, 30), # max lag = 30 y (cf. 40 y for Koarashi et al. 2012 w/ depth max = 60 cm)
+#   lower = c(0, 0, 0, 0),
+#   maxit = 1000,
+#   cost = "14C",
+#   fit_lag = TRUE
+# )
+# names(cvg1.redo.2ps.lag) <- names(mod.sens.fits.2ps.lag[cvg1])
+# # replace samples
+# mod.sens.fits.2ps.lag[cvg1] <- cvg1.redo.2ps.lag
+# save(mod.sens.fits.2ps.lag, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2ps.lag", "_", Sys.Date(), ".RData"))
+# # degeneracy check:
+# cvg10.2ps.lag <- which(unlist(lapply(lapply(mod.sens.fits.2ps.lag, "[[", 1), "[[", "convergence")) == 10)
+
+
+# # 3pp fit
+# mod.sens.fits.3pp <- mod.fits.fx(
+#   pars = pars.i.3pp,
+#   mod = "3pp",
+#   In = in.1.ls,
+#   sub = ix.10,
+#   lag = 0,
+#   upper = c(1, 1, 1, 1, 1),
+#   lower = c(0, 0, 0, 0, 0),
+#   cost = "14C"
+# )
+# names(mod.sens.fits.3pp) <- names(pars.i.3pp[ix.10])
+# save(mod.sens.fits.3pp, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.3pp", "_", Sys.Date(), ".RData"))
+# 
+# # 2ps fit
+# mod.sens.fits.2ps <- mod.fits.fx(
+#   pars = pars.i.2ps,
+#   mod = "2ps",
+#   In = in.1.ls,
+#   sub = 1:27,
+#   lag = 0,
+#   upper = c(1, 1, 1),
+#   lower = c(0, 0, 0),
+#   cost = "14C"
+# )
+# names(mod.sens.fits.2ps) <- names(pars.i.2ps)
+# save(mod.sens.fits.2ps, file = paste0("../data/derived/modFit_pars/", "mod.sens.fits.2ps", "_", Sys.Date(), ".RData"))
 ```
 
-```{r }
+```{r modFit-summary}
 # load fits as needed
 if (!exists("mod.fits.1p")) {
- load("../data/derived/modFit_pars/mod.sens.fits.1p_2022-08-11.Rdata") 
+ load("../data/derived/modFit_pars/mod.fits.1p_2022-08-11.RData") 
 }
 if (!exists("mod.sens.fits.2pp")) {
- load("../data/derived/modFit_pars/mod.sens.fits.2pp_2022-08-11.Rdata") 
+ load("../data/derived/modFit_pars/mod.sens.fits.2pp_2022-08-24.RData") 
+}
+if (!exists("mod.sens.fits.2pp.lag")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.2pp.lag_2022-09-06.RData") 
+}
+if (!exists("mod.sens.fits.2pp.lag100")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.2pp.lag100_2022-10-14.RData") 
 }
 if (!exists("mod.sens.fits.2ps")) {
- load("../data/derived/modFit_pars/mod.sens.fits.2ps_2022-08-11.Rdata") 
+ load("../data/derived/modFit_pars/mod.sens.fits.2ps_2022-08-24.RData") 
+}
+if (!exists("mod.sens.fits.2ps.lag")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.2ps.lag_2022-09-06.RData") 
+}
+if (!exists("mod.sens.fits.2ps.lag100")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.2ps.lag100_2022-10-14.RData") 
+}
+if (!exists("mod.sens.fits.3pp")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.3pp_2022-10-17.RData")
+}
+if (!exists("mod.sens.fits.3pp.lag2")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.3pp.lag2_2022-10-17.RData")
+}
+if (!exists("mod.sens.fits.3ps")) {
+ load("../data/derived/modFit_pars/mod.sens.fits.3ps_2022-10-18.RData")
 }
 
 # get mod fit only
 mod.fits.2pp <- lapply(mod.sens.fits.2pp, function(x) x[[1]])
+mod.fits.2pp.lag <- lapply(mod.sens.fits.2pp.lag, function(x) x[[1]])
+mod.fits.2pp.lag100 <- lapply(mod.sens.fits.2pp.lag100, function(x) x[[1]])
+mod.fits.3pp <- lapply(mod.sens.fits.3pp, function(x) x[[1]])
+# mod.fits.3pp.lag <- lapply(mod.sens.fits.3pp.lag, function(x) x[[1]])
+mod.fits.3pp.lag2 <- lapply(mod.sens.fits.3pp.lag2, function(x) x[[1]])
+
 mod.fits.2ps <- lapply(mod.sens.fits.2ps, function(x) x[[1]])
+mod.fits.2ps.lag <- lapply(mod.sens.fits.2ps.lag, function(x) x[[1]])
+mod.fits.2ps.lag100 <- lapply(mod.sens.fits.2ps.lag100, function(x) x[[1]])
+mod.fits.3ps <- lapply(mod.sens.fits.3ps, function(x) x[[1]])
+mod.fits.3ps.lag <- lapply(mod.sens.fits.3ps.lag, function(x) x[[1]])
 
 # get pars
+## 1p
 pars.fit.1p <- lapply(mod.fits.1p, "[[", 1)
+
+## 2p
+### pp
 pars.fit.2pp <- lapply(mod.fits.2pp, "[[", 1)
 names(pars.fit.2pp) <- names(pars.i.2pp)
+pars.fit.2pp.lag <- lapply(mod.fits.2pp.lag, "[[", 1) 
+names(pars.fit.2pp.lag) <- names(mod.fits.2pp.lag)
+pars.fit.2pp.lag100 <- lapply(mod.fits.2pp.lag100, "[[", 1) 
+names(pars.fit.2pp.lag100) <- names(mod.fits.2pp.lag100)
+
+### ps
 pars.fit.2ps <- lapply(mod.fits.2ps, "[[", 1)
 names(pars.fit.2ps) <- names(pars.i.2ps)
+pars.fit.2ps.lag <- lapply(mod.fits.2ps.lag, "[[", 1) 
+names(pars.fit.2ps.lag) <- names(mod.fits.2ps.lag)
+pars.fit.2ps.lag100 <- lapply(mod.fits.2ps.lag100, "[[", 1) 
+names(pars.fit.2ps.lag100) <- names(mod.fits.2ps.lag100)
+pars.fit.3ps <- lapply(mod.fits.3ps, "[[", 1)
+names(pars.fit.3ps) <- names(pars.i.3ps)
+pars.fit.3ps.lag <- lapply(mod.fits.3ps.lag, "[[", 1) 
+names(pars.fit.3ps.lag) <- names(mod.fits.3ps.lag)
+
+## 3p
+### pp
+pars.fit.3pp <- lapply(mod.fits.3pp, "[[", 1)
+names(pars.fit.3pp) <- names(mod.fits.3pp)
+pars.fit.3pp.lag2 <- lapply(mod.fits.3pp.lag2, "[[", 1) 
+names(pars.fit.3pp.lag2) <- names(mod.fits.3pp.lag2)
+
+### ps
+pars.fit.3ps <- lapply(mod.fits.3ps, "[[", 1)
+names(pars.fit.3ps) <- names(pars.i.3ps)
+pars.fit.3ps.lag <- lapply(mod.fits.3ps.lag, "[[", 1) 
+names(pars.fit.3ps.lag) <- names(mod.fits.3ps.lag)
+
 
 # run fitted models
 # 1p
@@ -940,7 +1098,9 @@ mod.fitted.1p <- lapply(seq_along(pars.fit.1p), function(i) {
   modFun(pars = pars.fit.1p[[i]], In = in.1.ls[[i]], mod = "1p", verbose = FALSE, out = "plot.df")
 })
 names(mod.fitted.1p) <- names(pars.fit.1p)
-# 2pp
+
+# 2p
+## 2pp
 mod.fitted.2pp.i <- lapply(seq_along(pars.i.2pp), function(i) {
   modFun(pars = pars.i.2pp[[i]], In = in.1.ls[[i]], mod = "2pp", 
          verbose = FALSE, out = "plot.df")
@@ -951,7 +1111,39 @@ mod.fitted.2pp <- lapply(seq_along(pars.fit.2pp), function(i) {
          verbose = FALSE, out = "plot.df")
 })
 names(mod.fitted.2pp) <- names(pars.fit.2pp)
-# 2ps
+mod.fitted.2pp.lag <- lapply(seq_along(pars.fit.2pp.lag), function(i) {
+  modFun(pars = pars.fit.2pp.lag[[i]], In = in.1.ls[[i]], mod = "2pp", 
+         verbose = FALSE, out = "plot.df", fit_lag = TRUE)
+})
+names(mod.fitted.2pp.lag) <- names(pars.fit.2pp.lag)
+mod.fitted.2pp.lag100 <- lapply(seq_along(pars.fit.2pp.lag100), function(i) {
+  modFun(pars = pars.fit.2pp.lag100[[i]], In = in.1.ls[[i]], mod = "2pp", 
+         verbose = FALSE, out = "plot.df", fit_lag = TRUE)
+})
+names(mod.fitted.2pp.lag100) <- names(pars.fit.2pp.lag100)
+
+# 3p
+## 3pp
+mod.fitted.3pp <- lapply(seq_along(pars.fit.3pp), function(i) {
+  modFun(pars = pars.fit.3pp[[i]], In = in.1.ls[[i]], mod = "3pp", 
+         verbose = FALSE, out = "plot.df")
+})
+names(mod.fitted.3pp) <- names(pars.fit.3pp)
+
+# mod.fitted.3pp.lag <- lapply(seq_along(pars.fit.3pp.lag), function(i) {
+#   modFun(pars = pars.fit.3pp.lag[[i]], In = in.1.ls[[i]], mod = "3pp", 
+#          verbose = FALSE, out = "plot.df", fit_lag = TRUE)
+# })
+# names(mod.fitted.3pp.lag) <- names(pars.fit.3pp.lag)
+
+mod.fitted.3pp.lag2 <- lapply(seq_along(pars.fit.3pp.lag2), function(i) {
+  modFun(pars = pars.fit.3pp.lag2[[i]], In = in.1.ls[[i]], mod = "3pp", 
+         verbose = FALSE, out = "plot.df", fit_lag = TRUE)
+})
+names(mod.fitted.3pp.lag2) <- names(pars.fit.3pp.lag2)
+
+
+## 2ps
 mod.fitted.2ps.i <- lapply(seq_along(pars.i.2ps), function(i) {
   modFun(pars = pars.i.2ps[[i]], In = in.1.ls[[i]], mod = "2ps", 
          verbose = FALSE, out = "plot.df")
@@ -962,6 +1154,26 @@ mod.fitted.2ps <- lapply(seq_along(pars.fit.2ps), function(i) {
          verbose = FALSE, out = "plot.df")
 })
 names(mod.fitted.2ps) <- names(pars.fit.2ps)
+mod.fitted.2ps.lag <- lapply(seq_along(pars.fit.2ps.lag), function(i) {
+  modFun(pars = pars.fit.2ps.lag[[i]], In = in.1.ls[[i]], mod = "2ps", 
+         verbose = FALSE, out = "plot.df", fit_lag = TRUE)
+})
+names(mod.fitted.2ps.lag) <- names(pars.fit.2ps.lag)
+mod.fitted.2ps.lag100 <- lapply(seq_along(pars.fit.2ps.lag100), function(i) {
+  modFun(pars = pars.fit.2ps.lag100[[i]], In = in.1.ls[[i]], mod = "2ps", 
+         verbose = FALSE, out = "plot.df", fit_lag = TRUE)
+})
+names(mod.fitted.2ps.lag100) <- names(pars.fit.2ps.lag100)
+mod.fitted.3ps <- lapply(seq_along(pars.fit.3ps), function(i) {
+  modFun(pars = pars.fit.3ps[[i]], In = in.1.ls[[i]], mod = "3ps", 
+         verbose = FALSE, out = "plot.df")
+})
+names(mod.fitted.3ps) <- names(pars.fit.3ps)
+mod.fitted.3ps.lag <- lapply(seq_along(pars.fit.3ps.lag), function(i) {
+  modFun(pars = pars.fit.3ps.lag[[i]], In = in.1.ls[[i]], mod = "3ps", 
+         verbose = FALSE, out = "plot.df", fit_lag = TRUE)
+})
+names(mod.fitted.3ps.lag) <- names(pars.fit.3ps.lag)
 
 # get ssr
 get.ssr.fx <- function(mod.fit.ls, mod) {
@@ -971,53 +1183,23 @@ get.ssr.fx <- function(mod.fit.ls, mod) {
 }
 ssr.1p.df <- get.ssr.fx(mod.fits.1p, "1p")
 ssr.2pp.df <- get.ssr.fx(mod.fits.2pp, "2pp")
+ssr.2pp.lag.df <- get.ssr.fx(mod.fits.2pp.lag, "2pp, lag")
+ssr.2pp.lag100.df <- get.ssr.fx(mod.fits.2pp.lag100, "2pp, lag100")
+ssr.3pp.df <- get.ssr.fx(mod.fits.3pp, "3pp")
+# ssr.3pp.lag.df <- get.ssr.fx(mod.fits.3pp.lag, "3pp, lag")
+ssr.3pp.lag2.df <- get.ssr.fx(mod.fits.3pp.lag2, "3pp, lag")
+
 ssr.2ps.df <- get.ssr.fx(mod.fits.2ps, "2ps")
- 
-# combine ssr & plot
-ssr.df <- rbind(
-  ssr.1p.df,
-  ssr.2pp.df,
-  ssr.2ps.df) %>% 
-  mutate(PMeco = substr(PMeco_depth, 1, 4))
-ssr.df %>%
-  filter(depth == "0-10") %>%
-  ggplot(., aes(PMeco, ssr, fill = mod)) + 
-  geom_col(position = "dodge") + 
-  # facet_grid(rows = vars(depth), scales = "free") + 
-  theme_bw() + 
-  theme(panel.grid.minor = element_blank())
+ssr.2ps.lag.df <- get.ssr.fx(mod.fits.2ps.lag, "2ps, lag")
+ssr.2ps.lag100.df <- get.ssr.fx(mod.fits.2ps.lag100, "2ps, lag100")
+ssr.3ps.df <- get.ssr.fx(mod.fits.3ps, "3ps")
+ssr.3ps.lag.df <- get.ssr.fx(mod.fits.3ps.lag, "3ps, lag")
 
-# mean residuals, by var (var_ms)
-var_ms.df.fx <- function(mod.fits.ls, costs, mod) {
-  df <- data.frame(bind_rows(lapply(mod.fits.ls, "[", "var_ms"), .id = "PMeco_depth"))
-  df$var <- rep(costs, nrow(df)/length(costs))
-  df$var_ms <- round(df$var_ms, 5)
-  df$depth <- sapply(strsplit(df$PMeco_depth, "_"), "[[", 2)
-  df$mod <- mod
-  return(df)
-}
-var_ms.1p.df <- var_ms.df.fx(mod.fits.1p, c("resp", "bulkC"), "1p")
-var_ms.2pp.df <- var_ms.df.fx(mod.fits.2pp, c("resp", "bulkC"), "2pp")
-var_ms.2ps.df <- var_ms.df.fx(mod.fits.2ps, c("resp", "bulkC"), "2ps")
-
-# combine var & plot
-var.df <- rbind(
-  var_ms.1p.df,
-  var_ms.2pp.df,
-  var_ms.2ps.df) %>% 
-  mutate(PMeco = substr(PMeco_depth, 1, 4))
-var.df %>%
-  filter(depth == "0-10") %>%
-  ggplot(., aes(PMeco, var_ms, fill = mod)) + 
-  geom_col(position = "dodge") + 
-  facet_grid(rows = vars(var), scales = "free") + 
-  theme_bw() + 
-  theme(panel.grid.minor = element_blank())
-
-# summarize pars
+## summarize pars
+# 1p
 pars.fit.1p.sum <- lapply(mod.fits.1p, function(x) {
   ## inspired by summary.modFit (FME)
-  summary.1p.modFit <- function (object, cov = TRUE,...) {
+  summary.1p.modFit <- function (object, cov = FALSE,...) {
     param  <- object$par
     pnames <- names(param)
     p      <- length(param)
@@ -1061,19 +1243,58 @@ pars.fit.1p.sum <- lapply(mod.fits.1p, function(x) {
   }
   summary.1p.modFit(x)
 })
-names(pars.fit.1p.sum) <- names(pars.fit.1p)
 
+## 2p
+# 2pp
 pars.fit.2pp.sum <- lapply(mod.fits.2pp, function(x) {
   tryCatch(summary(x), 
            error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
 })
 names(pars.fit.2pp.sum) <- names(pars.fit.2pp)
+# w/ lag
+pars.fit.2pp.lag.sum <- lapply(mod.fits.2pp.lag, function(x) {
+  tryCatch(summary(x), 
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.2pp.lag.sum) <- names(pars.fit.2pp.lag)
 
+# 2ps
 pars.fit.2ps.sum <- lapply(mod.fits.2ps, function(x) {
   tryCatch(summary(x), 
            error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
 })
 names(pars.fit.2ps.sum) <- names(pars.fit.2ps)
+# w/ lag
+pars.fit.2ps.lag.sum <- lapply(mod.fits.2ps.lag, function(x) {
+  tryCatch(summary(x), 
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.2ps.lag.sum) <- names(pars.fit.2ps.lag)
+
+# 3p
+# 3pp
+pars.fit.3pp.sum <- lapply(mod.fits.3pp, function(x) {
+  tryCatch(summary(x),
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.3pp.sum) <- names(pars.fit.3pp)
+pars.fit.3pp.lag2.sum <- lapply(mod.fits.3pp.lag2, function(x) {
+  tryCatch(summary(x),
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.3pp.lag2.sum) <- names(pars.fit.3pp.lag2)
+
+# 3ps
+pars.fit.3ps.sum <- lapply(mod.fits.3ps, function(x) {
+  tryCatch(summary(x),
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.3ps.sum) <- names(pars.fit.3ps)
+pars.fit.3ps.lag.sum <- lapply(mod.fits.3ps.lag, function(x) {
+  tryCatch(summary(x),
+           error = function (e) {cat("ERROR :", conditionMessage(e), "\n")})
+})
+names(pars.fit.3ps.lag.sum) <- names(pars.fit.3ps.lag)
 
 # compare par fits
 par.fit.df.fx <- function(pars_fit, pars_fit_alt, par_set_nms) {
@@ -1112,15 +1333,26 @@ pars.fit.2pp.2ps.ECOsum.df <- pars.fit.2pp.2ps.df %>%
 ```
 
 ```{r mod-fit-plot-fxs}
-singleMod.fit.plot.fx <- function(modFit.ls, mod) {
+singleMod.fit.plot.fx <- function(modFit.ls, mod, sensrange = FALSE, ...) {
   lapply(seq_along(modFit.ls), function(i) {
     PMeco_depth <- names(modFit.ls)[i]
     con.df <- con.df.fx(PMeco_depth)
-    C14.plot.fx(modFit.ls[[i]], con.df, mod, PMeco_depth = PMeco_depth)
+    p <- C14.plot.fx(modFit.ls[[i]], con.df, mod, PMeco_depth = PMeco_depth)
+    if (sensrange) {
+      p + 
+        geom_ribbon(aes(ymin = q95, ymax = q05, fill = pool), alpha = .3) +
+        scale_fill_manual(
+          name = "Model pool",
+          values = c("bulkC" = "black",
+                     "respiration" = "#e47b1f"))
+    } else {
+      p
+    }
   })
 }
 
-multiMod.fit.plot.fx <- function(fit1, fit1.name, fit2, fit2.name, fit3 = NULL, fit3.name = NULL) {
+multiMod.fit.plot.fx <- function(fit1, fit1.name, fit2, fit2.name, fit3 = NULL, fit3.name = NULL, sensrange = FALSE, avals_sr = NULL) {
+  
   lapply(seq_along(fit1), function(i) {
     PMeco_depth <- names(fit1)[i]
     con.df <- con.df.fx(PMeco_depth)
@@ -1131,58 +1363,1946 @@ multiMod.fit.plot.fx <- function(fit1, fit1.name, fit2, fit2.name, fit3 = NULL, 
                               rep(fit2.name, nrow(fit2[[i]])),
                               rep(fit3.name, nrow(fit3[[i]]))),
                             levels = c(fit1.name, fit2.name, fit3.name))
-    return(plot.df %>%
-             filter(pool == "bulkC" | pool == "respiration" | pool == "atm") %>%
-             ggplot(., aes(years, d14C, color = pool)) +
-             geom_path(aes(linetype = Model)) +
-             geom_point(data = con.df, aes(Year, d14c, color = pool), size = 3) +
-             scale_color_manual(
-               name = "Model pool",
-               values = c("atm" = 8,
-                          "bulkC" = "black",
-                          "respiration" = "#e47b1f")) +
-             scale_x_continuous(limits = c(1950, 2022)) +
-             ggtitle(PMeco_depth) +
-             xlab("Year") +
-             ylab(expression(''*Delta*''^14*'C (‰)')) +
-             theme_bw() +
-             theme(panel.grid = element_blank()))
+    
+    p <- plot.df %>%
+      filter(pool == "bulkC" | pool == "respiration" | pool == "atm") %>%
+      ggplot(., aes(years, d14C)) +
+      geom_path(aes(linetype = Model, color = pool)) +
+      geom_point(data = con.df, aes(Year, d14c, color = pool), size = 3) +
+      scale_color_manual(
+        name = "Model pool",
+        values = c("atm" = 8,
+                   "bulkC" = "black",
+                   "respiration" = "#e47b1f")) +
+      scale_x_continuous(limits = c(1950, 2022)) +
+      ggtitle(PMeco_depth) +
+      xlab("Year") +
+      ylab(expression(''*Delta*''^14*'C (‰)')) +
+      theme_bw() +
+      theme(panel.grid = element_blank())
+    
+    if (sensrange) {
+      if (is.null(avals_sr)) stop("alpha values must be specified when sensrange = TRUE")
+      p + 
+        geom_ribbon(aes(ymin = q95, ymax = q05, fill = pool, alpha = Model)) +
+        scale_fill_manual(
+          name = "Model pool",
+          values = c("bulkC" = "black",
+                     "respiration" = "#e47b1f")) +
+        scale_alpha_manual(
+          name = "Model",
+          values = avals_sr)
+    } else {
+      p
+    }
   })
 }
 ```
 
-```{r plot-modFit-curves}
+```{r plot-modFit-curves, eval = FALSE}
 # all 1p mods
 plot.ls.1p <- singleMod.fit.plot.fx(mod.fitted.1p, "1p")
 
 # all 2pp mods
 plot.ls.2pp <- singleMod.fit.plot.fx(mod.fitted.2pp, "2pp")
+# w/ lag
+plot.ls.2pp.lag <- singleMod.fit.plot.fx(mod.fitted.2pp.lag, "2pp, lagged")
+# lagged vs. unlagged
+plot.ls.2pp.2pp.lag <- multiMod.fit.plot.fx(mod.fitted.2pp, "2pp", mod.fitted.2pp.lag, "2pp, lag")
 
 # all 2ps mods
 plot.ls.2ps <- singleMod.fit.plot.fx(mod.fitted.2ps, "2ps")
+# w/ lag
+plot.ls.2ps.lag <- singleMod.fit.plot.fx(mod.fitted.2ps.lag, "2ps, lagged")
+# lagged vs. unlagged
+plot.ls.2ps.2ps.lag <- multiMod.fit.plot.fx(mod.fitted.2ps, "2ps", mod.fitted.2ps.lag, "2ps, lag")
 
-# plot both fits
-multiMod.fit.plot.fx(mod.fitted.2pp[ix.10], "2pp", mod.fitted.2ps[ix.10], "2ps", mod.fitted.1p, "1p")
+# plot 2pp, lag against 2ps, lag
+plot.ls.2pp.2ps.lag <- multiMod.fit.plot.fx(mod.fitted.2pp.lag, "2pp, lag", mod.fitted.2ps.lag, "2ps, lag")
 
-# plot initial vs. optimized fit
-multiMod.fit.plot.fx(
-  mod.fitted.2pp[ix.10], "2pp, fitted", 
-  lapply(pars.i.2pp[ix.10], function(x) 
-    modFun(x, "2pp", 1, out = "", verbose = FALSE)), "2pp, initial")
+# # plot initial vs. optimized fit
+# multiMod.fit.plot.fx(
+#   mod.fitted.2pp[ix.10], "2pp, fitted", 
+#   lapply(pars.i.2pp[ix.10], function(x) 
+#     modFun(x, "2pp", 1, out = "", verbose = FALSE)), "2pp, initial")
+# 
+# multiMod.fit.plot.fx(
+#   mod.fitted.2ps[ix.10], "2ps, fitted", 
+#   lapply(pars.i.2ps[ix.10], function(x) 
+#     modFun(x, "2ps", 1, out = "", verbose = FALSE)), "2ps, initial")
 
-multiMod.fit.plot.fx(
-  mod.fitted.2ps[ix.10], "2ps, fitted", 
-  lapply(pars.i.2ps[ix.10], function(x) 
-    modFun(x, "2ps", 1, out = "", verbose = FALSE)), "2ps, initial")
+# # check lag effects
+# multiMod.fit.plot.fx(
+#   mod.fitted.2pp[ix.10], "2pp, fitted",
+#   mod.fitted.2pp.L10, "2pp, lag = 10")
+plot.ls.2pp.2ps.lag
+
+# plot 2pp, lag against 3pp, lag
+multiMod.fit.plot.fx(mod.fitted.2pp.lag, "2pp, lag", mod.fitted.3pp.lag2, "3pp, lag")
+multiMod.fit.plot.fx(mod.fitted.3pp.lag, "3pp", mod.fitted.3pp.lag2, "3pp, lag")
+
+# 3pp vs. 3ps
+multiMod.fit.plot.fx(mod.fitted.3pp, "3pp", mod.fitted.3ps, "3ps")
+
+# 3ps vs. 2ps
+multiMod.fit.plot.fx(mod.fitted.2ps, "2ps", mod.fitted.3ps, "3ps")
 ```
 
-```{r test-alt-mod-funs}
-mod.sens.fits.2pp <- mod.fits.fx2(mod = "2pp",
-                                 pars = pars.i.2pp,
-                                 In = in.1.ls,
-                                 sub = ix.10,
-                                 upper = c(1, 1, 1),
-                                 lower = c(0, 0, 0),
-                                 cost = "14C")
-names(mod.sens.fits.2pp) <- names(pars.i.2pp)[ix.10]
+```{r modFit-err-comp}
+## compare uncertainty and goodness of fit for modFit estimates
+# combine ssr & plot
+ssr.df <- rbind(
+  ssr.1p.df,
+  ssr.2pp.df,
+  ssr.2ps.df,
+  ssr.2pp.lag.df,
+  ssr.2ps.lag.df,
+  ssr.3pp.df,
+  ssr.3pp.lag2.df,
+  ssr.3ps.df,
+  ssr.3ps.lag.df) %>% 
+  mutate(PMeco = substr(PMeco_depth, 1, 4))
+
+# NB: SSR for 1p models is off the charts
+ssr.df %>%
+  filter(mod != "1p") %>%
+  filter(PMeco_depth != "GRrf_10-20" & PMeco_depth != "GRrf_20-30") %>%
+  ggplot(., aes(PMeco, ssr, fill = mod)) + 
+  geom_col(position = "dodge") + 
+  scale_fill_manual(
+    name = "Model",
+    values = c("2pp" = "#00a6ab",
+               "2pp, lag" = "#00d8de",
+               "2ps" = "#bc63ff",
+               "2ps, lag" = "#d297ff",
+               "3pp" = "#e2d600",
+               "3pp, lag" = "#fcee00",
+               "3ps" = "#d600e2",
+               "3ps, lag" = "#f430ff")) +
+  facet_grid(rows = vars(depth), scales = "free") +
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank())
+# slightly higher SSR for non-lagged models
+# Otherwise all model structures are relatively equal (2p vs 3p, ps vs pp)
+
+# mean residuals, by var (var_ms)
+var_ms.df.fx <- function(mod.fits.ls, costs, mod) {
+  df <- data.frame(bind_rows(lapply(mod.fits.ls, "[", "var_ms"), .id = "PMeco_depth"))
+  df$var <- rep(costs, nrow(df)/length(costs))
+  df$var_ms <- round(df$var_ms, 5)
+  df$depth <- sapply(strsplit(df$PMeco_depth, "_"), "[[", 2)
+  df$mod <- mod
+  return(df)
+}
+var_ms.1p.df <- var_ms.df.fx(mod.fits.1p, c("resp", "bulkC"), "1p")
+var_ms.2pp.df <- var_ms.df.fx(mod.fits.2pp, c("resp", "bulkC"), "2pp")
+var_ms.2pp.lag.df <- var_ms.df.fx(mod.fits.2pp.lag, c("resp", "bulkC"), "2pp, lag")
+var_ms.2ps.df <- var_ms.df.fx(mod.fits.2pp.lag, c("resp", "bulkC"), "2ps")
+var_ms.2ps.lag.df <- var_ms.df.fx(mod.fits.2ps.lag, c("resp", "bulkC"), "2ps, lag")
+
+# combine var & plot
+var.df <- rbind(
+  var_ms.1p.df,
+  var_ms.2pp.df,
+  var_ms.2pp.lag.df,
+  var_ms.2ps.df,
+  var_ms.2ps.lag.df) %>% 
+  mutate(PMeco = substr(PMeco_depth, 1, 4))
+var.plot.2pp.2ps.1p <- var.df %>%
+  filter(depth == "0-10") %>%
+  ggplot(., aes(PMeco, var_ms, fill = mod)) + 
+  geom_col(position = "dodge") + 
+  facet_grid(rows = vars(var), scales = "free") + 
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank())
+```
+
+```{r plot-modFit-ssr, eval = FALSE}
+# SSR
+ssr.plot.2pp.2ps <- rbind(ssr.2pp.df, ssr.2ps.df) %>%
+  filter(PMeco_depth != "GRrf_10-20" & PMeco_depth != "GRrf_20-30") %>%
+  mutate(mod = rep(c("2pp", "2ps"), each = 25),
+         PM = substr(PMeco_depth, 1, 2),
+         eco = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = sapply(strsplit(PMeco_depth, "_"), "[", 2)) %>%
+  ggplot(., aes(PM, ssr, fill = PM, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp" = 1,
+                                "2ps" = .5)) +
+  scale_fill_manual(name = "Parent material",
+                    labels = c("AN" = "andesite",
+                               "BS" = "basalt",
+                               "GR" = "granite"),
+                    values = c("AN" = andesite, 
+                               "BS" = basalt, 
+                               "GR" = granite)) +
+  facet_grid(cols = vars(depth), rows = vars(eco)) +
+  ggtitle("SSR 2-pool models") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+```
+
+```{r modFit-sens}
+# extract sensitivity from modFit
+## 2p mods
+sens.2pp <- lapply(lapply(mod.sens.fits.2pp, "[[", "sens"), function(x) {
+  names(x)[3:5] <- c("kfast", "kslow", "gamma")
+  return(x) 
+})
+sens.2pp.lag <- lapply(lapply(mod.sens.fits.2pp.lag, "[[", "sens"), function(x) {
+  names(x)[3:6] <- c("kfast", "kslow", "gamma", "lag")
+  return(x) 
+})
+sens.2ps <- lapply(lapply(mod.sens.fits.2ps, "[[", "sens"), function(x) {
+  names(x)[3:5] <- c("kfast", "kslow", "alpha")
+  return(x) 
+})
+sens.2ps.lag <- lapply(lapply(mod.sens.fits.2ps.lag, "[[", "sens"), function(x) {
+  names(x)[3:6] <- c("kfast", "kslow", "alpha", "lag")
+  return(x) 
+})
+
+## 3p mods
+sens.3pp <- lapply(lapply(mod.sens.fits.3pp, "[[", "sens"), function(x) {
+  names(x)[3:7] <- c("kfast", "kslow", "kpassive",  "gammaFast", "gammaSlow")
+  return(x) 
+})
+sens.3pp.lag2 <- lapply(lapply(mod.sens.fits.3pp.lag2, "[[", "sens"), function(x) {
+  names(x)[3:8] <- c("kfast", "kslow", "kpassive", "gammaFast", "gammaSlow", "lag")
+  return(x) 
+})
+sens.3ps <- lapply(lapply(mod.sens.fits.3ps, "[[", "sens"), function(x) {
+  names(x)[3:7] <- c("kfast", "kslow", "kpassive",  "a21", "a32")
+  return(x) 
+})
+sens.3ps.lag <- lapply(lapply(mod.sens.fits.3ps.lag, "[[", "sens"), function(x) {
+  names(x)[3:8] <- c("kfast", "kslow", "kpassive",  "a21", "a32", "lag")
+  return(x) 
+})
+```
+
+```{r plot-par-sens, eval = FALSE}
+# plot sensitivity
+## 2p
+sens.plot.2pp <- lapply(sens.2pp, function(x) plot(x, which = c("bulkC", "resp")))
+sens.plot.2pp.lag <- lapply(sens.2pp.lag, function(x) plot(x, which = c("bulkC", "resp")))
+sens.plot.2ps <- lapply(sens.2ps, function(x) plot(x, which = c("bulkC", "resp")))
+sens.plot.2ps.lag <- lapply(sens.2ps.lag, function(x) plot(x, which = c("bulkC", "resp")))
+
+## 3p
+sens.plot.3pp <- lapply(sens.3pp, function(x) plot(x, which = c("bulkC", "resp")))
+sens.plot.3pp.lag2 <- lapply(sens.3pp.lag2, function(x) plot(x, which = c("bulkC", "resp")))
+sens.plot.3ps <- lapply(sens.3ps, function(x) plot(x, which = c("bulkC", "resp")))
+sens.plot.3ps.lag <- lapply(sens.3ps.lag, function(x) plot(x, which = c("bulkC", "resp")))
+```
+
+```{r modFit-ident}
+# look at identifiability
+inden.df.fx <- function(ls) {
+  lapply(ls, function(x) {
+    df <- collin(x)
+    df$ParCombo <- unlist(lapply(
+      lapply(apply(df, 1, function(x) which(x == 1)), names), function(y) {
+        paste(y, collapse = " + ")
+      }))
+    return(df)
+  })
+}
+
+# 2p mods
+iden.2pp <- inden.df.fx(sens.2pp)
+iden.2pp.lag <- inden.df.fx(sens.2pp.lag)
+iden.2ps <- inden.df.fx(sens.2ps)
+iden.2ps.lag <- inden.df.fx(sens.2ps.lag)
+
+# 3p mods
+iden.3pp <- inden.df.fx(sens.3pp)
+iden.3pp.lag2 <- inden.df.fx(sens.3pp.lag2)
+iden.3ps <- inden.df.fx(sens.3ps)
+iden.3ps.lag <- inden.df.fx(sens.3ps.lag)
+
+# identifiability plot function
+coll.plot.fx <- function(df, mod, PMeco_depth, col.max) {
+  
+  # set color values
+  cvals <- c("kfast + kslow" = "#EF476F",
+             "kfast + gamma" = "#FFD166",
+             "kslow + gamma" = "#118AB2",
+             "kfast + kslow + gamma" = "073B4C")
+  if (grepl("lag", mod)) {
+    cvals <- c(cvals, "")
+  }
+  if (grepl("ps", mod)) {
+    names(cvals) <- gsub("gamma", "alpha", names(cvals))
+  }
+  
+  ggplot(df, aes(N, log(collinearity), color = ParCombo)) +
+    geom_hline(yintercept = log(20)) +
+    geom_point(size = 3.5, position = position_dodge(width = .1)) +
+    scale_color_manual(
+      name = "Parameter combination",
+      values = cvals) +
+    scale_y_continuous(limits = c(0, log(col.max))) +
+    scale_x_continuous(limits = c(1.5, 3.5), breaks = c(2, 3)) +
+    labs(title = paste0(PMeco_depth, ", ", mod)) +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+}
+
+
+# # check number of par combos w/ collin < 20 @ N = 4 | 5 | 6
+# # N = 4
+# Filter(length, lapply(lapply(lapply(mod.sens.fits.3pp.lag2, "[[", 2), collin), function(x) {
+#   which(x[x$N == 4, 8] < 20)
+# }))
+# # ANrf_0-10, ANrf_20-30, ANwf_0-10, ANwf_10-20, ANwf_20-30, BSrf_0-10, BSrf_10-20, BSrf_20-30, BSwf_10-20, GRpp_0-10, GRrf_0-10, GRwf_0-10
+# 
+# # N = 5
+# Filter(length, lapply(lapply(lapply(mod.sens.fits.3pp.lag2, "[[", 2), collin), function(x) {
+#   which(x[x$N == 5, 8] < 20)
+# }))
+# # BSwf_10-20, GRrf_0-10
+# 
+# # N = 6
+# Filter(length, lapply(lapply(lapply(mod.sens.fits.3pp.lag2, "[[", 2), collin), function(x) {
+#   which(x[x$N == 6, 8] < 20)
+# }))
+# # none
+```
+
+```{r plot-ident, eval = FALSE}
+# plot
+id.plot.2pp <- lapply(seq_along(iden.2pp)[ix.10], function(i) {
+  coll.plot.fx(iden.2pp[[i]], "2pp", names(iden.2pp)[i], max(iden.2pp[[i]]["collinearity"]))
+})
+id.plot.2pp.lag <- lapply(seq_along(iden.2pp.lag), function(i) {
+  coll.plot.fx(iden.2pp.lag[[i]], "2pp, lag", names(iden.2pp.lag)[i],
+               max(iden.2pp[[i]]["collinearity"]))
+})
+id.plot.2ps <- lapply(seq_along(iden.2ps)[ix.10], function(i) {
+  coll.plot.fx(iden.2ps[[i]], "2ps", names(iden.2ps)[i], max(iden.2ps[[i]]["collinearity"]))
+})
+id.plot.2ps.lag <- lapply(seq_along(iden.2ps.lag), function(i) {
+  coll.plot.fx(iden.2ps.lag[[i]], "2ps, lag", names(iden.2ps.lag)[i],
+               max(iden.2ps.lag[[i]]["collinearity"]))
+})
+```
+
+```{r adjust-inputs}
+## 1. Fit inputs to modeled stocks
+# function for fitting input to modeled stocks
+in.fit.fx <- function(modStr, pars, initialIn, SOC, fit_lag = FALSE) {
+  
+  # check par length
+  if (grepl("3p", modStr)) {
+    par.len <- 5
+  } else {
+    par.len <- 4
+  }
+  
+  # remove lag from pars as needed
+  if (fit_lag) {
+    PARS <- pars[1:par.len]
+  } else {
+    PARS <- pars
+  }
+  
+  # sequence of possible input values
+  if  (SOC < soc.fx(PARS, modStr, initialIn, "sum")) {
+    ins <- seq(.01, 
+               initialIn, 
+               .01)
+  } else {
+    ins <- seq(initialIn, 
+               SOC, 
+               .01)
+  }
+  
+  # modeled stocks
+  soc_mod <- lapply(seq_along(ins), function(j) soc.fx(PARS, modStr, ins[j], "sum"))
+  ix <- which.min(abs(unlist(soc_mod) - SOC))
+  return(ins[ix])
+}
+
+in.fit.1p <- lapply(seq_along(pars.fit.1p), function(i) {
+  PMeco_depth <- names(pars.fit.1p)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("1p", pars.fit.1p[[i]], in.1.ls[[i]], SOC))
+})
+names(in.fit.1p) <- names(mod.fits.1p)
+
+## 2p
+# pp
+in.fit.2pp <- lapply(seq_along(pars.fit.2pp), function(i) {
+  PMeco_depth <- names(pars.fit.2pp)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("2pp", pars.fit.2pp[[i]], in.1.ls[[i]], SOC))
+})
+names(in.fit.2pp) <- names(mod.fits.2pp)
+# w/ lag
+in.fit.2pp.lag <- lapply(seq_along(pars.fit.2pp.lag), function(i) {
+  PMeco_depth <- names(pars.fit.2pp.lag)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("2pp", pars.fit.2pp.lag[[i]], in.1.ls[[i]], SOC, fit_lag = TRUE))
+})
+names(in.fit.2pp.lag) <- names(mod.fits.2pp.lag)
+
+## ps
+in.fit.2ps <- lapply(seq_along(pars.fit.2ps), function(i) {
+  PMeco_depth <- names(pars.fit.2ps)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("2ps", pars.fit.2ps[[i]], in.1.ls[[i]], SOC))
+})
+names(in.fit.2pp) <- names(mod.fits.2pp)
+# w/ lag
+in.fit.2ps.lag <- lapply(seq_along(pars.fit.2ps.lag), function(i) {
+  PMeco_depth <- names(pars.fit.2ps.lag)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("2ps", pars.fit.2ps.lag[[i]], in.1.ls[[i]], SOC, fit_lag = TRUE))
+})
+names(in.fit.2ps.lag) <- names(mod.fits.2ps.lag)
+
+
+# 3p
+## pp
+in.fit.3pp <- lapply(seq_along(pars.fit.3pp), function(i) {
+  PMeco_depth <- names(pars.fit.3pp)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("3pp", pars.fit.3pp[[i]], in.1.ls[[i]], SOC))
+})
+names(in.fit.3pp) <- names(mod.fits.3pp)
+# w/ lag
+in.fit.3pp.lag2 <- lapply(seq_along(pars.fit.3pp.lag2), function(i) {
+  PMeco_depth <- names(pars.fit.3pp.lag2)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("3pp", pars.fit.3pp.lag2[[i]], in.1.ls[[i]], SOC, fit_lag = TRUE))
+})
+names(in.fit.3pp.lag2) <- names(mod.fits.3pp.lag2)
+
+## ps 
+in.fit.3ps <- lapply(seq_along(pars.fit.3ps), function(i) {
+  PMeco_depth <- names(pars.fit.3ps)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("3ps", pars.fit.3ps[[i]], in.1.ls[[i]], SOC))
+})
+names(in.fit.3ps) <- names(mod.fits.3ps)
+# w/ lag
+in.fit.3ps.lag <- lapply(seq_along(pars.fit.3ps.lag), function(i) {
+  PMeco_depth <- names(pars.fit.3ps.lag)[i]
+  SOC <- csoc.19.0_30[[PMeco_depth]][ ,"lyr_soc"]
+  return(in.fit.fx("3ps", pars.fit.3ps.lag[[i]], in.1.ls[[i]], SOC, fit_lag = TRUE))
+})
+names(in.fit.3ps.lag) <- names(mod.fits.3ps.lag)
+
+
+## 2. Fit stocks to estimated inputs
+# Fluxes estimated from Goulden et al. 2012; Tang et al. 2005; Wang et al. 2000; Gaudinski 2000
+gpp.ls <- c(1.8, 1.6, 1.4) # GPP by elevation (kgC m^-2 yr^-1) (Goulden et al. 2012, Fig. 5)
+
+# Soil resp % (Rh) = 1184 / (1184 + 524) ~ 0.3 (Tang et al. 2005, ann. mean Blodgett; cf. 0.48 @Harvard Forest)
+# A horizon contribution to Rh = 0.55 (est. from Gaudinski et al. 2000, Harvard Forest study)
+hznA.Rh.kgm2 <- 0.3 * 0.55
+
+# Adjust inputs by depth (assuming A = 0-30): 0-10 = 50%, 10-20 = 30%, 20-30 = 20% 
+in.frc.ls <- c(0.5, 0.3, 0.2)
+
+# fx for calculating inputs
+in.flx.fx <- function(PMeco_depth) {
+  gpp <- ifelse(grepl("pp", PMeco_depth), gpp.ls[1], ifelse(grepl("wf", PMeco_depth), gpp.ls[2], gpp.ls[3]))
+  in.frc <- ifelse(grepl("0-10", PMeco_depth), in.frc.ls[1], ifelse(grepl("10-20", PMeco_depth), in.frc.ls[2], in.frc.ls[3]))
+  gpp * in.frc * hznA.Rh.kgm2
+}
+
+# Estimate inputs
+in.est <- lapply(seq_along(pars.i.2pp), function(i) {
+  PMeco_depth <- names(pars.i.2pp)[i]
+  in.flx.fx(PMeco_depth)
+})
+names(in.est) <- names(pars.i.2pp)
+```
+
+```{r plot-inputs, eval = FALSE}
+in.est.plot <- bind_rows(lapply(in.est, function(x) data.frame(In = x)), .id = "PMeco_depth") %>%
+  mutate(PM = substr(PMeco_depth, 1, 2),
+         eco = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = substr(PMeco_depth, 6, nchar(PMeco_depth))) %>%
+  ggplot(., aes(eco, In)) +
+  geom_col(position = "dodge") +
+  coord_cartesian(ylim = c(0, .5)) +
+  facet_grid(rows = vars(depth)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+in.fit.2pp.plot <- bind_rows(lapply(in.fit.2pp, function(x) data.frame(In = x)), .id = "PMeco_depth") %>%
+  mutate(PM = substr(PMeco_depth, 1, 2),
+         ECO = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = substr(PMeco_depth, 6, nchar(PMeco_depth))) %>%
+  ggplot(., aes(PM, In, fill = PM)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("AN" = andesite,
+                                "BS" = basalt,
+                                "GR" = granite)) +
+  coord_cartesian(ylim = c(0, .5)) +
+  facet_grid(rows = vars(depth), cols = vars(ECO)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+in.fit.2ps.plot <- bind_rows(lapply(in.fit.2ps, function(x) data.frame(In = x)), .id = "PMeco_depth") %>%
+  mutate(PM = substr(PMeco_depth, 1, 2),
+         ECO = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = substr(PMeco_depth, 6, nchar(PMeco_depth))) %>%
+  ggplot(., aes(PM, In, fill = PM)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("AN" = andesite,
+                                "BS" = basalt,
+                                "GR" = granite)) +
+  coord_cartesian(ylim = c(0, .5)) +
+  facet_grid(rows = vars(depth), cols = vars(ECO)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# 2pp vs. 2ps w/ lags
+in.fit.2p.lag.plot <- rbind(
+  bind_rows(lapply(in.fit.2pp.lag, function(x) data.frame(In = x)), .id = "PMeco_depth"),
+  bind_rows(lapply(in.fit.2ps.lag, function(x) data.frame(In = x)), .id = "PMeco_depth")) %>%
+  filter(PMeco_depth != "BSwf_10-20" & PMeco_depth != "BSwf_20-30") %>%
+  mutate(mod = rep(c("2pp, lag", "2ps, lag"), ea = 25),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = substr(PMeco_depth, 6, nchar(PMeco_depth))) %>%
+  ggplot(., aes(PM, In, fill = PM, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("AN" = andesite,
+                                "BS" = basalt,
+                                "GR" = granite)) +
+  scale_alpha_manual(values = c("2pp, lag" = 1, "2ps, lag" = .5)) +
+  # coord_cartesian(ylim = c(0, .5)) +
+  facet_grid(rows = vars(depth), cols = vars(ECO), scales = "free") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# compare w/ and w/o lags
+in.fit.2pp.lag.plot <- rbind(
+  bind_rows(lapply(in.fit.2pp, function(x) data.frame(In = x)), .id = "PMeco_depth"),
+  bind_rows(lapply(in.fit.2pp.lag, function(x) data.frame(In = x)), .id = "PMeco_depth")) %>%
+  filter(PMeco_depth != "BSwf_10-20" & PMeco_depth != "BSwf_20-30") %>%
+  mutate(mod = rep(c("2pp", "2pp, lag"), ea = 25),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = substr(PMeco_depth, 6, nchar(PMeco_depth))) %>%
+  ggplot(., aes(PM, In, fill = PM, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("AN" = andesite,
+                               "BS" = basalt,
+                               "GR" = granite)) +
+  scale_alpha_manual(values = c("2pp" = 1, "2pp, lag" = .5)) +
+  facet_grid(rows = vars(depth), cols = vars(ECO), scales = "free") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+in.fit.2ps.lag.plot <- rbind(
+  bind_rows(lapply(in.fit.2ps, function(x) data.frame(In = x)), .id = "PMeco_depth"),
+  bind_rows(lapply(in.fit.2ps.lag, function(x) data.frame(In = x)), .id = "PMeco_depth")) %>%
+  filter(PMeco_depth != "BSwf_10-20" & PMeco_depth != "BSwf_20-30" & PMeco_depth != "GRwf_10-20") %>%
+  mutate(mod = rep(c("2ps", "2ps, lag"), ea = 24),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = substr(PMeco_depth, 6, nchar(PMeco_depth))) %>%
+  ggplot(., aes(PM, In, fill = PM, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("AN" = andesite,
+                               "BS" = basalt,
+                               "GR" = granite)) +
+  scale_alpha_manual(values = c("2ps" = 1, "2ps, lag" = .5)) +
+  facet_grid(rows = vars(depth), cols = vars(ECO), scales = "free") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# 3pp
+in.fit.3pp.lag.plot <- rbind(
+  bind_rows(lapply(in.fit.3pp, function(x) data.frame(In = x)), .id = "PMeco_depth"),
+  bind_rows(lapply(in.fit.3pp.lag2, function(x) data.frame(In = x)), .id = "PMeco_depth")) %>%
+  filter(PMeco_depth != "BSwf_10-20" & PMeco_depth != "BSwf_20-30") %>%
+  mutate(mod = rep(c("3pp", "3pp, lag"), ea = 25),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = factor(
+           substr(PMeco_depth, 3, 4), levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")),
+         depth = substr(PMeco_depth, 6, nchar(PMeco_depth))) %>%
+  ggplot(., aes(PM, In, fill = PM, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("AN" = andesite,
+                               "BS" = basalt,
+                               "GR" = granite)) +
+  scale_alpha_manual(values = c("3pp" = 1, "3pp, lag" = .5)) +
+  facet_grid(rows = vars(depth), cols = vars(ECO), scales = "free") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+in.fit.3pp.lag.plot
+```
+
+# Inputs
+For the 2pp models the sites ANpp 0-10 and BSwf 10-20 & 20-30 had much higher inputs than the other sites. For the 2ps models it's the same, with the addition of GRwf 10-20. Sites ANpp 0-10 and BSwf 20-30 also have anomalously high mean ages. All of the sites with high inputs have transit times ~ 1 yr (TT for ANpp 0-10 = 9 yr), in contrast to values ranging from 60 yrs to  hundreds of yrs.
+
+Inputs for 3pp models not much different from 2pp models, alhough there is a tendency to be slightly greater.
+
+```{r age-tt-modFit}
+# system age and transit time function
+sa.tt.modFit.fx <- function(mod, pars, input) {
+  
+  # check k length
+  if (grepl("3p", mod)) {
+    k.len <- 3
+  } else {
+    k.len <- 2
+  }
+  
+  # model matrix and inputs
+  A <- -1 * diag(pars[1:k.len])
+  if (grepl("ps", mod)) {
+    if (k.len == 2) {
+      In <- c(input, 0)
+      A[2, 1] <- pars[[3]] * pars[[1]]
+    } else {
+      In <- c(input, 0, 0)
+      A[2, 1] <- pars[[4]] * pars[[1]]
+      A[3, 2] <- pars[[5]] * pars[[2]]
+    }
+  } else {
+    if (k.len == 2) {
+      In <- c(input * pars[3], input * (1 - pars[3]))
+    } else {
+      In <- c(input * pars[4], input * pars[5], input * (1 - (pars[4] + pars[5])))
+    }
+  }
+  
+  # System ages and transit times
+  list(systemAge(A = A, u = In), transitTime(A = A, u = In))
+}
+
+# get SA, TT
+## 1p
+ss.tt.1p.ls <- lapply(pars.fit.1p, function(x) {
+  age <- x^-1 * 1
+  transitTime <- age
+  list(age, transitTime)
+})
+
+## 2p
+### pp
+sa.tt.2pp.ls <- lapply(pars.fit.2pp, function(x) sa.tt.modFit.fx(mod = "2pp", pars = x, input = 1))
+sa.tt.2pp.lag.ls <- lapply(pars.fit.2pp.lag, function(x) sa.tt.modFit.fx(mod = "2pp", pars = x, input = 1))
+
+### ps
+sa.tt.2ps.ls <- lapply(pars.fit.2ps, function(x) sa.tt.modFit.fx(mod = "2ps", pars = x, input = 1))
+sa.tt.2ps.lag.ls <- lapply(pars.fit.2ps.lag, function(x) sa.tt.modFit.fx(mod = "2ps", pars = x, input = 1))
+
+## 3p
+### pp
+sa.tt.3pp.ls <- lapply(pars.fit.3pp, function(x) sa.tt.modFit.fx(mod = "3pp", pars = x, input = 1))
+sa.tt.3pp.lag.ls <- lapply(pars.fit.3pp.lag2, function(x) 
+  sa.tt.modFit.fx(mod = "3pp, lag", pars = x, input = 1))
+
+### ps
+sa.tt.3ps.ls <- lapply(pars.fit.3ps, function(x) sa.tt.modFit.fx(mod = "3ps", pars = x, input = 1))
+sa.tt.3ps.lag.ls <- lapply(pars.fit.3ps.lag, function(x) sa.tt.modFit.fx(mod = "3ps", pars = x, input = 1))
+
+# compare lagged vs. unlagged fits
+sa.tt.2pp.df <- data.frame(
+  mod = rep(c("2pp", "2pp, lag"), each = length(sa.tt.2pp.ls)),
+  PMeco_depth = c(names(sa.tt.2pp.ls), names(sa.tt.2pp.lag.ls)), 
+  age = c(
+    unlist(lapply(lapply(sa.tt.2pp.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge"))),
+    unlist(lapply(lapply(sa.tt.2pp.lag.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge")))),
+  tt = c(
+    unlist(lapply(lapply(sa.tt.2pp.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))),
+    unlist(lapply(lapply(sa.tt.2pp.lag.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))))) %>%
+  mutate(depth = sapply(strsplit(as.character(PMeco_depth), "_"), "[", 2),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = substr(PMeco_depth, 3, 4),
+         eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite", ifelse(PM == "BS", "basalt", "granite")))
+
+# 2ps
+sa.tt.2ps.df <- data.frame(
+  mod = rep(c("2ps", "2ps, lag"), each = length(sa.tt.2ps.ls)),
+  PMeco_depth = c(names(sa.tt.2ps.ls), names(sa.tt.2ps.lag.ls)), 
+  age = c(
+    unlist(lapply(lapply(sa.tt.2ps.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge"))),
+    unlist(lapply(lapply(sa.tt.2ps.lag.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge")))),
+  tt = c(
+    unlist(lapply(lapply(sa.tt.2ps.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))),
+    unlist(lapply(lapply(sa.tt.2ps.lag.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))))) %>%
+  mutate(depth = sapply(strsplit(as.character(PMeco_depth), "_"), "[", 2),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = substr(PMeco_depth, 3, 4),
+         eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite", ifelse(PM == "BS", "basalt", "granite")))
+
+
+# 3p
+## pp
+sa.tt.3pp.df <- data.frame(
+  mod = rep(c("3pp", "3pp, lag"), each = length(sa.tt.3pp.ls)),
+  PMeco_depth = c(names(sa.tt.3pp.ls), names(sa.tt.3pp.lag.ls)), 
+  age = c(
+    unlist(lapply(lapply(sa.tt.3pp.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge"))),
+    unlist(lapply(lapply(sa.tt.3pp.lag.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge")))),
+  tt = c(
+    unlist(lapply(lapply(sa.tt.3pp.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))),
+    unlist(lapply(lapply(sa.tt.3pp.lag.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))))) %>%
+  mutate(depth = sapply(strsplit(as.character(PMeco_depth), "_"), "[", 2),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = substr(PMeco_depth, 3, 4),
+         eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite", ifelse(PM == "BS", "basalt", "granite")))
+
+## ps
+sa.tt.3ps.df <- data.frame(
+  mod = rep(c("3ps", "3ps, lag"), each = length(sa.tt.3ps.ls)),
+  PMeco_depth = c(names(sa.tt.3ps.ls), names(sa.tt.3ps.lag.ls)), 
+  age = c(
+    unlist(lapply(lapply(sa.tt.3ps.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge"))),
+    unlist(lapply(lapply(sa.tt.3ps.lag.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge")))),
+  tt = c(
+    unlist(lapply(lapply(sa.tt.3ps.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))),
+    unlist(lapply(lapply(sa.tt.3ps.lag.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))))) %>%
+  mutate(depth = sapply(strsplit(as.character(PMeco_depth), "_"), "[", 2),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = substr(PMeco_depth, 3, 4),
+         eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite", ifelse(PM == "BS", "basalt", "granite")))
+
+# make df of SA for 2pp, 2ps
+sa.tt.2p.df <- data.frame(
+  mod = rep(c("2pp", "2ps"), each = length(sa.tt.2pp.ls)),
+  PMeco_depth = c(names(sa.tt.2pp.ls), names(sa.tt.2ps.ls)), 
+  age = c(
+    unlist(lapply(lapply(sa.tt.2pp.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge"))),
+    unlist(lapply(lapply(sa.tt.2ps.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge")))),
+  tt = c(
+    unlist(lapply(lapply(sa.tt.2pp.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))),
+    unlist(lapply(lapply(sa.tt.2ps.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))))) %>%
+  mutate(depth = sapply(strsplit(as.character(PMeco_depth), "_"), "[", 2),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = substr(PMeco_depth, 3, 4),
+         eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite", ifelse(PM == "BS", "basalt", "granite")))
+
+# make df of SA, TT for 2pp, 2ps (w/ lags)
+sa.tt.2p.lag.df <- data.frame(
+  mod = rep(c("2pp, lag", "2ps, lag"), each = length(sa.tt.2pp.lag.ls)),
+  PMeco_depth = c(names(sa.tt.2pp.lag.ls), names(sa.tt.2ps.lag.ls)), 
+  age = c(
+    unlist(lapply(lapply(sa.tt.2pp.lag.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge"))),
+    unlist(lapply(lapply(sa.tt.2ps.lag.ls, "[", 1), function(x) lapply(x, "[[", "meanSystemAge")))),
+  tt = c(
+    unlist(lapply(lapply(sa.tt.2pp.lag.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))),
+    unlist(lapply(lapply(sa.tt.2ps.lag.ls, "[", 2), function(x) lapply(x, "[[", "meanTransitTime"))))) %>%
+  mutate(depth = sapply(strsplit(as.character(PMeco_depth), "_"), "[", 2),
+         PM = substr(PMeco_depth, 1, 2),
+         ECO = substr(PMeco_depth, 3, 4),
+         eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite", ifelse(PM == "BS", "basalt", "granite")))
+```
+
+```{r plot-SA-TT, eval = FALSE}
+# plot ages
+## 2pp vs 2ps
+sa.plot.2pp.2ps <- sa.tt.2p.df %>%
+  filter(PMeco_depth != "BSwf_20-30") %>%
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp" = 1,
+                                "2ps" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(depth), cols = vars(eco), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+## 2pp vs. 2pp lag
+sa.plot.2pp <- sa.tt.2pp.df %>%
+  filter(PMeco_depth != "BSwf_20-30") %>% 
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp" = 1,
+                                "2pp, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(depth), cols = vars(eco), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+## 2ps vs. 2ps lag
+sa.plot.2ps <- sa.tt.2ps.df %>%
+  filter(PMeco_depth != "BSwf_20-30") %>%
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2ps" = 1,
+                                "2ps, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(depth), cols = vars(eco), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+## 3pp vs. 3pp lag
+sa.plot.3pp <- sa.tt.3pp.df %>%
+  filter(PMeco_depth != "BSwf_20-30" & PMeco_depth != "ANpp_20-30") %>%
+  filter(age > 0) %>%
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("3pp" = 1,
+                                "3pp, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(depth), cols = vars(eco), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+## 3ps vs 3ps lag
+sa.plot.3ps <- sa.tt.3ps.df %>%
+  filter(PMeco_depth != "BSwf_20-30" & PMeco_depth != "ANpp_20-30") %>%
+  filter(age > 0) %>%
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("3ps" = 1,
+                                "3ps, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(depth), cols = vars(eco), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+## 2pp lag vs 3pp lag
+sa.plot.2pp.3pp.lag <- 
+  rbind(sa.tt.2p.lag.df[grepl("2pp", sa.tt.2p.lag.df$mod), ], 
+        sa.tt.3pp.df[grepl("lag", sa.tt.3pp.df$mod), ]) %>%
+  filter(PMeco_depth != "BSwf_20-30" & PMeco_depth != "GRpp_20-30") %>%
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp, lag" = 1,
+                                "3pp, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(depth), cols = vars(eco), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+## 2ps lag vs 3ps lag
+sa.plot.2ps.3ps.lag <- 
+  rbind(sa.tt.2p.lag.df[grepl("2ps", sa.tt.2p.lag.df$mod), ], 
+        sa.tt.3ps.df[grepl("lag", sa.tt.3ps.df$mod), ]) %>%
+  filter(PMeco_depth != "BSwf_20-30" & PMeco_depth != "GRpp_20-30") %>%
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2ps, lag" = 1,
+                                "3ps, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(rows = vars(depth), cols = vars(eco), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# plot tt (w/o lags)
+tt.plot.2pp.2ps <- sa.tt.2p.df %>%
+  filter(PMeco_depth != "BSwf_20-30") %>%
+  filter(mod == "2pp") %>%
+  ggplot(., aes(pm, tt, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp" = 1,
+                                "2ps" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(depth)) +
+  ggtitle("Mean transit time") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# 2pp (w/ lag)
+tt.plot.2pp.2pp.lag <- sa.tt.2pp.df %>%
+  filter(PMeco_depth != "BSwf_20-30") %>%
+  ggplot(., aes(pm, tt, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp" = 1,
+                                "2pp, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(depth), scales = "free") +
+  ggtitle("Mean transit time") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# 3p
+tt.plot.3pp <- sa.tt.3pp.df %>%
+  filter(PMeco_depth != "BSwf_20-30" & PMeco_depth != "BSrf_0-10") %>%
+  filter(age > 0) %>%
+  ggplot(., aes(pm, tt, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("3pp" = 1,
+                                "3pp, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(depth), scales = "free") +
+  ggtitle("Mean transit time") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# 2pp vs. 3pp
+tt.plot.2pp.3pp.lag <- rbind(
+  sa.tt.2p.lag.df[grepl("2pp", sa.tt.2p.lag.df$mod), ], 
+  sa.tt.3pp.df[grepl("lag", sa.tt.3pp.df$mod), ]) %>%
+  filter(PMeco_depth != "BSwf_20-30" & PMeco_depth != "BSrf_0-10") %>%
+  filter(age > 0) %>%
+  ggplot(., aes(pm, tt, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp, lag" = 1,
+                                "3pp, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(depth), scales = "free") +
+  ggtitle("Mean transit time") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# 2ps
+tt.plot.2ps.2ps.lag <- sa.tt.2ps.df %>%
+  filter(PMeco_depth != "BSwf_20-30") %>%
+  ggplot(., aes(pm, tt, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2ps" = 1,
+                                "2ps, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(depth), scales = "free") +
+  ggtitle("Mean transit time") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+# compare lagged fits
+tt.plot.2p.lag <- sa.tt.2p.lag.df %>%
+  filter(PMeco_depth != "GRrf_10-20" & PMeco_depth != "GRrf_20-30") %>%
+  ggplot(., aes(pm, tt, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_alpha_manual(name = "Model",
+                     values = c("2pp, lag" = 1,
+                                "2ps, lag" = .5)) +
+  scale_fill_manual(values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(depth)) +
+  ggtitle("Mean transit time") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+sa.plot.3pp
+sa.plot.3ps
+```
+
+```{r plot-sa-tt}
+## comparison of sa, tt, among 2pp and 2ps mods
+# sa.plot.2p.lag
+# tt.plot.2p.lag
+
+### 2ps mods, comparison of climate effect within PM
+## 0-10
+# SA
+sa.plot.2ps.10 <- sa.tt.2ps.df %>%
+  filter(mod == "2ps, lag" & depth == "0-10") %>%
+  ggplot(., aes(eco, age, fill = eco)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(name = "", 
+                    values = c("warm" = warm,
+                               "cool" = cool,
+                               "cold" = cold)) +
+  scale_y_continuous(limits = c(0, 550)) +
+  facet_grid(cols = vars(pm), scales = "free") +
+  # ggtitle("Mean system age") +
+  ylab("Mean age (y)") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        strip.text = element_blank(),
+        strip.background = element_rect(color = "white"),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 12))
+ggsave("/Users/jeff/Desktop/sa.plot.2ps.10.png", plot = sa.plot.2ps.10,
+       width = 8.49, height = 4.17, units = c("in"))
+# TT
+tt.plot.2ps.10 <- sa.tt.2ps.df %>%
+  filter(mod == "2ps, lag" & depth == "0-10") %>%
+  ggplot(., aes(eco, tt, fill = eco)) +
+  geom_col(position = "dodge", alpha = .8) +
+  scale_fill_manual(values = c("warm" = warm,
+                               "cool" = cool,
+                               "cold" = cold)) +
+  scale_y_continuous(limits = c(0, 220)) +
+  facet_grid(cols = vars(pm), scales = "free") +
+  # ggtitle("Mean transit time") +
+  ylab("Mean transit time (y)") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        strip.text = element_blank(),
+        strip.background = element_rect(color = "white"),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 12))
+ggsave("/Users/jeff/Desktop/tt.plot.2ps.10.png", plot = tt.plot.2ps.10,
+       width = 8.49, height = 4.17, units = c("in"))
+
+## 10-20
+# SA
+sa.plot.2ps.20 <- sa.tt.2ps.df %>%
+  filter(mod == "2ps, lag" & depth == "10-20") %>%
+  ggplot(., aes(eco, age, fill = eco)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("warm" = warm,
+                               "cool" = cool,
+                               "cold" = cold)) +
+  facet_grid(cols = vars(pm), scales = "free") +
+  ggtitle("Mean system age") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+sa.plot.2ps.20
+# TT
+tt.plot.2ps.20 <- sa.tt.2ps.df %>%
+  filter(mod == "2ps, lag" & depth == "10-20" & PMeco_depth != "GRrf_10-20") %>%
+  ggplot(., aes(eco, tt, fill = eco)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("warm" = warm,
+                               "cool" = cool,
+                               "cold" = cold)) +
+  facet_grid(cols = vars(pm), scales = "free") +
+  ggtitle("Mean transit time") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+tt.plot.2ps.20
+
+## all depths
+# SA
+sa.plot.2pp.2ps.lag <- sa.tt.2p.lag.df %>%
+  filter(mod == "2ps, lag" & PMeco_depth != "BSwf_20-30") %>%
+  ggplot(., aes(eco, age, fill = eco)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(name = "", 
+                    values = c("warm" = warm,
+                               "cool" = cool,
+                               "cold" = cold)) +
+  facet_grid(rows = vars(depth), cols = vars(pm), scales = "free") +
+  # ggtitle("Mean system age") +
+  ylab("Mean age (y)") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 12))
+ggsave("/Users/jeff/Desktop/sa.plot.2ps.lag.png", plot = sa.plot.2pp.2ps.lag,
+       width = 7, height = 4.17, units = c("in"))
+
+# plot BSrf as an example of lag effects (w/ depth)
+lg <- get_legend(plot.ls.2ps.lag[[13]] + 
+                   theme(legend.position = "right"))
+p.ls <- lapply(plot.ls.2ps.lag[13:15], function(p) {
+  p +
+    theme(legend.position = "none",
+          title = element_blank(),
+          axis.title = element_blank())
+})
+y.grob <- textGrob(expression(''*Delta*''^14*'C (‰)'),
+                   gp = gpar(fontface = "bold", fontsize = 14), rot = 90)
+x.grob <- textGrob("Year", gp = gpar(fontface = "bold", fontsize = 14))
+labs <- paste0(letters[1:3], ")", c(" 0-10 cm", " 10-20 cm", " 20-30 cm"))
+pg <- arrangeGrob(
+  plot_grid(plotlist = p.ls, ncol = 1, labels = labs, label_x = .08, hjust = 0, label_y = .95, label_size = 10, label_fontface = "bold"),
+  left = y.grob, bottom = x.grob)
+BSrf.2ps.p <- plot_grid(pg, lg, rel_widths = c(4, 1))
+ggsave("/Users/jeff/Desktop/BSrf.2ps.p.png", plot = BSrf.2ps.p,
+       width = 6, height = 4.17, units = c("in"))
+```
+
+```{r plot-sa-tt-dist-modFit}
+# density extraction fx
+sa.dens.df.fx <- function(sa.ls) {
+  ls <- lapply(sa.tt.2pp.imprs.ls, function(x) x[[1]][["systemAgeDensity"]])
+  arr <- bind_cols(ls)
+  df <- data.frame(PMeco_depth = rep(dimnames(arr)[[2]], each = nrow(arr)),
+                   ages = rep(seq(1, nrow(arr)), ncol(arr)),
+                   dens = unlist(ls))
+  df %>%
+    mutate(pm = ifelse(grepl("AN", PMeco_depth), "andesite",
+                             ifelse(grepl("BS", PMeco_depth), "basalt", "granite")),
+           eco = factor(ifelse(grepl("wf", PMeco_depth), "cool", "cold"), levels = c("cool", "cold")))
+}
+
+
+sa.dens.df <- sa.dens.df.fx(sa.tt.2pp.imprs.ls)
+f_labs <- data.frame(ages = 220, dens = 0.014, eco = c("cool", "cold"))
+f_labs$label <- paste0(letters[1:2], ") ", f_labs$eco)
+sa.p <- ggplot(sa.dens.df, aes(ages, dens)) +
+  geom_path(aes(color = pm), size = 1.2) +
+  geom_vline(data = sa.2pp.imprs.df, aes(xintercept = age, color = pm),
+             linetype = "dashed", size = 1, show.legend = FALSE) +
+  geom_text(data = f_labs, aes(label = label),
+            show.legend = FALSE, size = .36 * 28, fontface = "bold", hjust = "left") +
+  scale_color_manual(
+    name = "",
+    values = c("andesite" = andesite,
+               "basalt" = basalt,
+               "granite" = granite)) +
+  scale_x_continuous(breaks = c(0, 150, 300, 450)) +
+  facet_grid(cols = vars(eco)) +
+  xlab("Age") +
+  ylab("Density") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.text.x = element_text(size = 24),
+        axis.title.x = element_text(size = 28),
+        axis.title.y = element_text(size = 28),
+        axis.text.y = element_text(size = 24),
+        legend.text = element_text(size = 24),
+        legend.key.width = unit(1.7, "cm"),
+        legend.position = "bottom")
+ggsave(filename = "/Users/jeff/nextCloud/Documents/Posters and talks/My posters:talks/IMPRS_Retreat_2022/sa.png",
+       plot = sa.p, height = 5.64, width = 13, units = "in")
+sa.p
+```
+
+```{r lm-SA-TT}
+#
+sa.tt.2p.df %>%
+  filter(PMeco_depth != "ANpp_0-10") %>%
+  filter(depth == "0-10") %>%
+  lm(age ~ pm, .) %>%
+  summary
+
+# lagged sites
+sa.tt.2p.lag.df %>%
+  filter(PMeco_depth != "GRrf_10-20" & PMeco_depth != "GRrf_20-30" & PMeco_depth != "BSwf_20-30") %>%
+  mutate(middepth = as.numeric(sapply(strsplit(depth, "-"), "[[", 2)) - 5) %>%
+  lm(age ~ pm * eco + middepth, .) %>%
+  summary
+
+# MAT
+mat.df <- data.frame(
+  PMeco = c("ANpp", "BSpp", "GRpp", "ANwf", "BSwf", "GRwf", "ANrf", "BSwf", "BSrf"),
+  MAT = c(11.5, 13.3, 11.1, 8.5, 8.3, 9.1, 6, 6.5, 7.2))
+
+sa.tt.2p.lag.df %>%
+  filter(PMeco_depth != "GRrf_10-20" & PMeco_depth != "GRrf_20-30" & PMeco_depth != "BSwf_20-30") %>%
+  mutate(middepth = as.numeric(sapply(strsplit(depth, "-"), "[[", 2)) - 5,
+         PMeco = sapply(strsplit(as.character(PMeco_depth), "_"), "[[", 1)) %>%
+  left_join(mat.df) %>%
+  lm(tt ~ pm * MAT + middepth, .) %>%
+  summary
+```
+
+# Ages & transit times
+Fits for the 2pp and 2ps models were similar across the 0-10 cm depth layer. The only noticable exceptions were for the GRwf and GRrf sites. For the GRrf site, the fit for the 2pp model was essentially a one pool model, with nearly identical *tau* values of 1/170 for the fast and slow pools. In contrast, *tau* for the fast pool in the 2ps model fit at the GRrf site was 1, while the slow pool tau was 1/170. For the GRwf site, the 2pp fit had tau values of 21 and 152 for fast and slow pools, respectively, while the 2ps taus were smaller (longer turnover time): 57 and 1075 respectively.
+
+In general, due to the similarities in the fits and the differences in model structure, the ages and transit times were substantially longer for the series models than for the parallel models. However, mean ages and transit times for both the 2pp and 2ps fits appeared to be excessively long at several of the sites. This problem was especially apparent for the 10-20 cm and 20-30 cm depth layers, although we also observed ages for the ANpp site in the 0-10 cm depth layer that exceeded those of the other sites by an order of magnitude (ca. 1500 vs. 150). For the 10-20 cm layer, the cold climate granite site had the oldest mean ages: 1750 and 2500 for the 2pp and 2ps models respectively, with the mean age of the remaining sites = 350 yrs. The most striking outlier for age was the 20-30 cm layer at the BSwf site, for which both the 2pp and 2ps models had mean ages ≥ 95,000, exceeding the mean ages of the other sites by 1 to 2 orders of magnitude.
+
+```{r extract-bayes-fits}
+# load fits as needed
+if (!exists("bayes_fit_2pp_0_10")) {
+ load("../data/derived/bayes-par-fit-2022-08-25/bayes_fit_2pp_0-10_1000iter.RData") 
+}
+if (!exists("bayes_fit_2ps_0_10")) {
+ load("../data/derived/bayes-par-fit-2022-08-25/bayes_fit_2ps_0-10_1000iter.RData") 
+}
+
+# check convergence
+plot()
+
+
+# refit w/ burnin = 500, nitr = 1500, and updatecov = 50
+bayes_fit_2pp_0_10_ANpp_b500_upcov50 # no difference :(
+# refit w/ default jump (10% of par value)
+bayes_fit_2pp_0_10_ANpp_b500_upcov10_jd <- bayes.fit.fx(
+  mod = "2pp",
+  pars.fit = pars.fit.2pp,
+  In.fit = in.1.ls,
+  var0 = mod.fits.2pp,
+  jump = NULL,
+  sub = 1,
+  upper = c(1, 1, 1),
+  lower = c(0, 0 ,0),
+  burninlength = 500,
+  updatecov = 10,
+  iter = 1500)
+
+bayes_fit_2pp_0_10_GRwf_b500_upcov50 <- bayes.fit.fx(
+  mod = "2pp",
+  pars.fit = pars.fit.2pp,
+  In.fit = in.1.ls,
+  var0 = mod.fits.2pp,
+  jump = pars.fit.2pp.sum,
+  sub = 7,
+  upper = c(1, 1, 1),
+  lower = c(0, 0 ,0),
+  burninlength = 500,
+  updatecov = 50,
+  iter = 1500)
+
+# fx for AIC calc
+aic.FME <- function(fit, fit_type, par_length) {
+  if (fit_type == "modFit") {
+    ms <- fit$ms
+  } else {
+    ms <- fit$bestfunp / length(9)
+  }
+  2 * par_length + 2 * log(ms)
+}
+
+aic.2pp.lag <- lapply(mod.fits.2pp.lag, aic.FME, fit_type = "modFit", par_length = 4)
+aic.2ps.lag <- lapply(mod.fits.2ps.lag, aic.FME, fit_type = "modFit", par_length = 4)
+aic.2pp <- lapply(mod.fits.2pp, aic.FME, fit_type = "modFit", par_length = 3)
+aic.2ps <- lapply(mod.fits.2ps, aic.FME, fit_type = "modFit", par_length = 3)
+
+# plot AIC
+# data.frame(pm = substr(names(aic.2pp.lag), 1, 2), eco = substr(names(aic.2pp.lag), 3, 4), depth = sapply(strsplit(names(aic.2pp.lag), "_"), "[[", 2), mod = rep(c("2pp", "2pp, lag"), ea = length(aic.2pp.lag)), aic = c(unlist(aic.2pp), unlist(aic.2pp.lag))) %>% ggplot(., aes(pm, aic, fill = mod)) + geom_col(position = "dodge") + facet_grid(rows = vars(depth), cols = vars(eco)) + theme_bw() + theme(panel.grid.minor = element_blank())
+
+# pars
+pars.fit.10.2pp.mcmc <- lapply(bayes_fit_2pp_0_10, "[[", "bestpar")
+pars.fit.10.2ps.mcmc <- lapply(bayes_fit_2ps_0_10, "[[", "bestpar")
+
+# modfits
+mod.fitted.10.2pp.mcmc <- lapply(bayes_fit_2pp_0_10, function(x) 
+    modFun(x$bestpar, "2pp", 1, out = "", verbose = FALSE))
+mod.fitted.10.2ps.mcmc <- lapply(bayes_fit_2ps_0_10, function(x) 
+    modFun(x$bestpar, "2ps", 1, out = "", verbose = FALSE))
+
+
+# AIC fx for modMCMC [maybe this works?]
+aic.MCMC <- function(mcmc.ls, mod.fit.ls, npar, ...) {
+    
+  nms <- names(mcmc.ls)
+  ls <- lapply(seq_along(mcmc.ls), function(i) {
+    mcmc <- mcmc.ls[[i]]
+    n <- length(mod.fit.ls[[i]][["residuals"]])
+    SS <- min(mcmc$SS, na.rm = TRUE)
+    ms <- SS / n
+    -2 * log(ms) + 2 * npar
+  })
+  names(ls) <- nms
+  return(ls)
+}
+aic.MCMC(bayes_fit_2pp_0_10, mod.fits.2pp, npar = 3)
+aic.MCMC(bayes_fit_2ps_0_10, mod.fits.2ps, npar = 3)
+```
+
+```{r plot-bayes-fits}
+# compare modFit and bayes fit for 2pp, 2ps (0-10cm)
+plot.mcmc.modfit.2pp <- multiMod.fit.plot.fx(
+  mod.fitted.2pp[ix.10], "2pp, modFit",
+  mod.fitted.10.2pp.mcmc, "2pp, MCMC")
+plot.mcmc.modfit.2ps <- multiMod.fit.plot.fx(
+  mod.fitted.2ps[ix.10], "2ps, modFit",
+  mod.fitted.10.2ps.mcmc, "2ps, MCMC")
+plot.mcmc.2pp.2ps <- multiMod.fit.plot.fx(
+  mod.fitted.10.2pp.mcmc, "2pp, MCMC",
+  mod.fitted.10.2ps.mcmc, "2ps, MCMC")
+
+# look at parameter collinearity
+coll.2pp <- lapply(bayes_fit_2pp_0_10, pairs)
+coll.2ps <- lapply(bayes_fit_2ps_0_10, pairs)
+plot.mcmc.2pp.2ps
+```
+
+```{r plot-pars-fx}
+plot.pars.fx <- function(pars.ls, x_var, mod, par_filter = NULL) {
+  
+  # quote x_var
+  quo_var <- sym(x_var)
+  
+  # set group var
+  if (x_var == "eco") {
+    quo_fil <- sym("pm")
+    quo_vls <- c("andesite" = andesite, "basalt" = basalt, "granite" = granite)
+  } else {
+    quo_fil <- sym("eco")
+    quo_vls <- c("warm" = warm, "cool" = cool, "cold" = cold)
+  }
+  
+  # define par names
+  par_names <- c("k_fast", "k_slow")
+  
+  # filter pars
+  if (!is.null(par_filter)) {
+    pars.ls <- lapply(pars.ls, function(x) x <- x[-par_filter])
+  } else {
+    if (mod == "2ps") {
+      par_names <- factor(c(par_names, "alpha"), levels = c("k_fast", "k_slow", "alpha"))
+    } else {
+      par_names <- factor(c(par_names, "gamma"), levels = c("k_fast", "k_slow", "gamma"))
+    }
+  }
+  
+  bind_rows(
+  lapply(seq_along(pars.ls), function(i) {
+    data.frame(value = pars.ls[[i]],
+               par = par_names,
+               PM = substr(names(pars.ls)[i], 1, 2),
+               ECO = substr(names(pars.ls)[i], 3, 4))
+  })) %>%
+  mutate(eco = factor(ifelse(ECO == "pp", "warm", ifelse(ECO == "wf", "cool", "cold")),
+                      levels = c("warm", "cool", "cold")),
+         pm = ifelse(PM == "AN", "andesite", ifelse(PM == "BS", "basalt", "granite"))) %>%
+  ggplot(., aes(!! quo_var, value, fill = !! quo_fil)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(name = NULL,
+                    values = quo_vls) +
+  facet_grid(rows = vars(par), scales = "free") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.title.x = element_blank())
+}
+```
+
+```{r plot-pars}
+# plot modFit pars
+plot.pars.fx(pars.fit.2pp, "eco", "2pp")
+plot.pars.fx(pars.fit.2ps, "eco", "2ps")
+
+# plot modFit pars, 3p
+plot.pars.fx(pars.fit.3pp.lag, "eco", "3pp, lag")
+plot.pars.fx(pars.fit.3ps.lag, "eco", "3ps, lag")
+
+# plot MCMC pars
+plot.pars.fx(pars.fit.10.2pp.mcmc, "eco", "2pp")
+plot.pars.fx(pars.fit.10.2ps.mcmc, "eco", "2ps")
+```
+
+```{r plot-bayes-pars}
+## look at model performance
+pars.bayes.df.fx <- function(mod, pars.bayes, pars.fit) {
+  bind_rows(lapply(seq_along(pars.bayes), function(i) {
+    ix <- match(unique(pars.bayes[[i]][["pars"]][, 1]), pars.bayes[[i]][["pars"]][, 1])
+    df <- data.frame(k1 = pars.bayes[[i]][["pars"]][ix, 1],
+                     k2 = pars.bayes[[i]][["pars"]][ix, 2],
+                     p3 = pars.bayes[[i]][["pars"]][ix, 3])
+    df <- cbind(df,
+                PMeco_depth = rep(names(pars.fit)[i], length(ix)),
+                mod = rep(mod, length(ix)))
+    df <- cbind(df, 
+                PM = factor(substr(df$PMeco_depth, 1, 2)),
+                eco = factor(substr(df$PMeco_depth, 3, 4), levels = c("pp", "wf", "rf")))
+    return(df)
+  }))
+}
+pars.bayes.2pp.df <- pars.bayes.df.fx("2pp", bayes_fit_2pp_0_10, pars.fit.2pp[ix.10])
+pars.bayes.2ps.df <- pars.bayes.df.fx("2ps", bayes_fit_2ps_0_10, pars.fit.2ps[ix.10])
+
+# combine
+pars.bayes.2p.df <- rbind(pars.bayes.2pp.df,
+      pars.bayes.2ps.df) %>%
+  mutate(mod = c(rep("2pp", nrow(pars.bayes.2pp.df)), rep("2ps", nrow(pars.bayes.2ps.df))),
+         PMeco = as.character(substr(PMeco_depth, 1, 4))) %>%
+  pivot_longer(cols = 1:3, names_to = "par", values_to = "value") %>%
+  mutate(PM = factor(PM),
+         eco = factor(eco, levels = c("pp", "wf", "rf"), labels = c("warm", "cool", "cold")))
+  
+# plot
+pars.bayes.2p.df %>%
+  filter(par != "p3") %>%
+  filter(PMeco_depth != "GRrf_0-10") %>%
+  ggplot(., aes(PM, value, color = PM, linetype = mod)) +
+  geom_boxplot() +
+  scale_color_manual(labels = c("AN" = "andesite",
+                               "BS" = "basalt",
+                               "GR" = "granite"),
+                    values = c("AN" = andesite, 
+                               "BS" = basalt, 
+                               "GR" = granite)) +
+  facet_grid(cols = vars(eco), rows = vars(par), scales = "free") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+```
+
+```{r bayes-fit-sens}
+## Extract timeseries distribution envelopes from MCMC par fits
+# load data
+if (!exists("pred_uncert_2pp")) {
+ load("../data/derived/bayes-par-sens/pred_uncert_2pp_2022-08-25.RData") 
+}
+if (!exists("pred_uncert_2ps")) {
+ load("../data/derived/bayes-par-sens/pred_uncert_2ps_2022-08-25.RData") 
+}
+
+# sensitivity summary fx
+sens.sum.fx <- function(mod, pred_uncert_ls) {
+  ls <- lapply(seq_along(pred_uncert_ls), function(i) {
+    n <- nrow(Datm)
+    mat <- pred_uncert_ls[[i]][4:ncol(pred_uncert_ls[[i]])]
+    ls <- list(mat[ , 1:n], mat[ , (n + 1):(n + n)])
+    ls.sum <- lapply(ls, function(x) {
+     df <- data.frame(t(apply(x, 2, summary)[c(2, 4:5), ]))
+     colnames(df) <- c("q05", "mean", "q95")
+     pool <- ifelse(grepl("bulkC", rownames(df)[1]), "bulkC", "respiration")
+     cbind(pool = pool, df)
+    })
+    rbind(
+      data.frame(cbind(years = Datm$Date, mean = Datm$d14c, pool = "atm", q05 = NA, q95 = NA),
+                 stringsAsFactors = FALSE), 
+      cbind(years = Datm$Date, bind_rows(ls.sum))) %>%
+      mutate(d14C = mean,
+             Model = mod) %>%
+      type.convert(.)
+  })
+  names(ls) <- names(pred_uncert_ls)
+  return(ls)
+}
+
+# 2pp
+sens_sum.2pp.ls <- sens.sum.fx("2pp", pred_uncert_2pp)
+
+# 2ps
+sens_sum.2ps.ls <- sens.sum.fx("2ps", pred_uncert_2ps)
+```
+
+```{r bayes-fit-plots}
+# plot bayes fits w/ sensitivity envelopes
+multiMod.fit.plot.fx(
+  sens_sum.2pp.ls, "2pp, MCMC", sens_sum.2ps.ls, "2ps, MCMC", sensrange = TRUE,
+  avals_sr = c("2pp, MCMC" = .3, "2ps, MCMC" = .2))
+```
+
+```{r sa-tt-mcmc}
+sa.tt.2pp.mcmc.ls <- lapply(bayes_fit_2pp_0_10, function(x) {
+  A <- -diag(x$bestpar[1:2])
+  In <- c(x$bestpar[3], 1 - x$bestpar[3])
+  a <- seq(1, 500)
+  sa <- systemAge(A = A, u = In, a = a)
+  tt <- transitTime(A = A, u = In)
+  list(sa, tt)
+})
+sa.tt.2ps.mcmc.ls <- lapply(bayes_fit_2ps_0_10, function(x) {
+  A <- -diag(x$bestpar[1:2])
+  In <- c(x$bestpar[3], 1 - x$bestpar[3])
+  a <- seq(1, 500)
+  sa <- systemAge(A = A, u = In, a = a)
+  tt <- transitTime(A = A, u = In)
+  list(sa, tt)
+})
+sa.tt.df.fx <- function(sa.tt.ls, mod) {
+  bind_rows(lapply(sa.tt.ls, function(x) {
+    sa <- x[[1]][["meanSystemAge"]]
+    tt <- x[[2]][["meanTransitTime"]]
+    data.frame(age = sa, tt = tt)
+  }), .id = "PMeco_depth") %>%
+    mutate(mod = mod,
+           pm = ifelse(grepl("AN", PMeco_depth), "andesite",
+                              ifelse(grepl("BS", PMeco_depth), "basalt", "granite")),
+           eco = factor(ifelse(grepl("wf", PMeco_depth), "cool", 
+                               ifelse(grepl("rf", PMeco_depth), "cold", "warm")), 
+                                      levels = c("warm", "cool", "cold")))
+}
+
+# sa.tt.1p.df <- bind_rows(lapply(pars.fit.1p[ix.10], function(x) {
+#   data.frame(age = x^-1, tt = x^-1)
+# }), .id = "PMeco_depth") %>%
+#   mutate(mod = "1p",
+#          pm = ifelse(grepl("AN", PMeco_depth), "andesite",
+#                             ifelse(grepl("BS", PMeco_depth), "basalt", "granite")),
+#          eco = factor(ifelse(grepl("wf", PMeco_depth), "cool", 
+#                              ifelse(grepl("rf", PMeco_depth), "cold", "warm")), 
+#                                     levels = c("warm", "cool", "cold")))
+
+# get mean ages and transit times
+sa.2pp.2ps.mcmc.df <- rbind(
+  sa.tt.df.fx(sa.tt.2pp.mcmc.ls, "2pp"),
+  sa.tt.df.fx(sa.tt.2ps.mcmc.ls, "2ps")) %>%
+  arrange(PMeco_depth)
+
+# fx for extracting system age/transit time densitis
+sa.tt.dens.df.fx <- function(sa.tt.ls, value, mod) {
+  if (value == "age") {
+    ls <- lapply(sa.tt.ls, function(x) x[[1]][["systemAgeDensity"]]) 
+  } else {
+    ls <- lapply(sa.tt.ls, function(x) x[[2]][["transitTimeDensity"]]) 
+  }
+  arr <- bind_cols(ls)
+  df <- data.frame(PMeco_depth = rep(dimnames(arr)[[2]], each = nrow(arr)),
+                   mod = mod,
+                   prop = rep(seq(1, nrow(arr)), ncol(arr)),
+                   dens = unlist(ls))
+  names(df)[which(names(df) == "prop")] <- value
+  df %>%
+    mutate(pm = ifelse(grepl("AN", PMeco_depth), "andesite",
+                             ifelse(grepl("BS", PMeco_depth), "basalt", "granite")),
+           eco = factor(ifelse(grepl("wf", PMeco_depth), "cool", 
+                               ifelse(grepl("rf", PMeco_depth), "cold", "warm")), 
+                                      levels = c("warm", "cool", "cold")))
+}
+
+# get age densities
+sa.2pp.2ps.mcmc.dens.df <- rbind(
+  sa.tt.dens.df.fx(sa.tt.2pp.mcmc.ls, "age", "2pp"), sa.tt.dens.df.fx(sa.tt.2ps.mcmc.ls, "age", "2ps"))
+
+# get tt densities
+tt.2pp.2ps.mcmc.dens.df <- rbind(
+  sa.tt.dens.df.fx(sa.tt.2pp.mcmc.ls, "tt", "2pp"), sa.tt.dens.df.fx(sa.tt.2ps.mcmc.ls, "tt", "2ps"))
+
+# plot distributions
+ggplot(sa.2pp.2ps.mcmc.dens.df, aes(age, dens)) +
+  geom_path(aes(color = pm)) +
+  # geom_vline(data = sa.2pp.2ps.mcmc.df, aes(xintercept = age, color = pm),
+  #            linetype = "dashed", show.legend = FALSE) +
+  scale_color_manual(
+    name = "",
+    values = c("andesite" = andesite,
+               "basalt" = basalt,
+               "granite" = granite)) +
+  # coord_cartesian(xlim = c(0, 500), ylim = c(0, )) +
+  facet_grid(cols = vars(mod), rows = vars(eco), scales = "free") +
+  xlab("Age") +
+  ylab("Density") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+# plot mean ages
+sa.2pp.2ps.mcmc.df %>%
+  # filter(eco == "cool") %>%
+  # filter(mod == "2pp") %>%
+  filter(mod == "2ps") %>%
+  ggplot(., aes(pm, age, fill = pm, alpha = mod)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(
+    name = "",
+    values = c("andesite" = andesite,
+               "basalt" = basalt,
+               "granite" = granite)) +
+  scale_alpha_manual(
+    name = "",
+    values = c("2pp" = 1,
+               "2ps" = .6)) +
+  # coord_cartesian(ylim = c(0, 500)) + # 2pp
+  coord_cartesian(ylim = c(0, 700)) + # 2ps
+  facet_grid(cols = vars(eco), scales = "free") +
+  xlab("Age") +
+  ylab("Density") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+```{r minC-mod-fit}
+# load frc 14c data and filter to thermally fractionated samples
+load("/Users/jeff/sra-frc/source/dens.01.09.19.sp.df.RData")
+tml.frc.set <- lapply(split(dens.01.09.19.sp.df, dens.01.09.19.sp.df$PMeco_depth)[c(9, 18, 27)], function(x) {
+  x[which(x$frc == "minC"), ]
+})
+
+# extract LF data for GRrf sites
+dens.01.09.19.sp.df
+
+# fit models
+```
+
+```{r imprs-plots}
+# ix.imprs <- c(3, 6, 9, 2, 5, 8)
+# sa.tt.2pp.imprs.ls <- lapply(bayes_fit_2pp_0_10[ix.imprs], function(x) {
+#   A <- -diag(x$bestpar[1:2])
+#   In <- c(x$bestpar[3], 1 - x$bestpar[3])
+#   a <- seq(1, 500)
+#   sa <- systemAge(A = A, u = In, a = a)
+#   tt <- transitTime(A = A, u = In)
+#   list(sa, tt)
+# })
+# sa.2pp.imprs.df <- bind_rows(lapply(sa.tt.2pp.imprs.ls, function(x) {
+#   sa <- x[[1]][["meanSystemAge"]]
+#   tt <- x[[2]][["meanTransitTime"]]
+#   data.frame(age = sa, tt = tt)
+# }), .id = "PMeco_depth") %>%
+#   mutate(pm = ifelse(grepl("AN", PMeco_depth), "andesite", 
+#                              ifelse(grepl("BS", PMeco_depth), "basalt", "granite")),
+#          eco = factor(ifelse(grepl("wf", PMeco_depth), "cool", "cold"), levels = c("cool", "cold")))
+# 
+# # sa.mcmc.2pp.imprs <- lapply(bayes_fit_2pp_0_10[ix.imprs], function(x) {
+# #   ix <- sample(nrow(x$pars), 200)
+# #   pars <- x$pars[ix, ]
+# #   ages <- vector(mode = "list", length = length(ix))
+# #   for (i in 1:nrow(pars)) {
+# #     A <- -diag(pars[i, 1:2])
+# #     In <- c(1 * pars[i, 3], 1 * (1 - pars[i, 3]))
+# #     ages[[i]] <- systemAge(A = A, u = In)
+# #   }
+# #   return(ages)
+# # })
+# # sa.meanAge.2pp.imprs <- lapply(sa.mcmc.2pp.imprs, function(x) unlist(lapply(x, "[[", "meanSystemAge")))
+# 
+# sa.dens.df.fx <- function(sa.ls) {
+#   ls <- lapply(sa.tt.2pp.imprs.ls, function(x) x[[1]][["systemAgeDensity"]])
+#   arr <- bind_cols(ls) 
+#   df <- data.frame(PMeco_depth = rep(dimnames(arr)[[2]], each = nrow(arr)), 
+#                    ages = rep(seq(1, nrow(arr)), ncol(arr)),
+#                    dens = unlist(ls))
+#   df %>% 
+#     mutate(pm = ifelse(grepl("AN", PMeco_depth), "andesite", 
+#                              ifelse(grepl("BS", PMeco_depth), "basalt", "granite")),
+#            eco = factor(ifelse(grepl("wf", PMeco_depth), "cool", "cold"), levels = c("cool", "cold")))
+# }
+# sa.dens.df <- sa.dens.df.fx(sa.tt.2pp.imprs.ls)
+# f_labs <- data.frame(ages = 220, dens = 0.014, eco = c("cool", "cold"))
+# f_labs$label <- paste0(letters[1:2], ") ", f_labs$eco)
+# sa.p <- ggplot(sa.dens.df, aes(ages, dens)) + 
+#   geom_path(aes(color = pm), size = 1.2) + 
+#   geom_vline(data = sa.2pp.imprs.df, aes(xintercept = age, color = pm), 
+#              linetype = "dashed", size = 1, show.legend = FALSE) +
+#   geom_text(data = f_labs, aes(label = label), 
+#             show.legend = FALSE, size = .36 * 28, fontface = "bold", hjust = "left") +
+#   scale_color_manual(
+#     name = "", 
+#     values = c("andesite" = andesite,
+#                "basalt" = basalt,
+#                "granite" = granite)) +
+#   scale_x_continuous(breaks = c(0, 150, 300, 450)) +
+#   facet_grid(cols = vars(eco)) +
+#   xlab("Age") +
+#   ylab("Density") +
+#   theme_bw() + 
+#   theme(panel.grid = element_blank(),
+#         strip.background = element_blank(),
+#         strip.text = element_blank(),
+#         axis.text.x = element_text(size = 24),
+#         axis.title.x = element_text(size = 28),
+#         axis.title.y = element_text(size = 28),
+#         axis.text.y = element_text(size = 24),
+#         legend.text = element_text(size = 24),
+#         legend.key.width = unit(1.7, "cm"),
+#         legend.position = "bottom")
+# ggsave(filename = "/Users/jeff/nextCloud/Documents/Posters and talks/My posters:talks/IMPRS_Retreat_2022/sa.png", 
+#        plot = sa.p, height = 5.64, width = 13, units = "in")
+# sa.p
+```
+
+```{r IMPRS-plots-etc}
+# # compare best fit plots for 0-10 (wf, rf)
+# ix.wf <- grep("wf", names(mod.fitted.10.2pp.mcmc))
+# ix.rf <- grep("rf", names(mod.fitted.10.2pp.mcmc))
+# wf.2pp.p.ls <- singleMod.fit.plot.fx(sens_sum.2pp.ls[ix.wf], "2pp, MCMC", sensrange = TRUE)
+# rf.2pp.p.ls <- singleMod.fit.plot.fx(sens_sum.2pp.ls[ix.rf], "2pp, MCMC", sensrange = TRUE)
+# lg <- get_legend(
+#     wf.2pp.p.ls[[1]] +
+#       guides(fill = "none") +
+#       theme(legend.box.margin = margin(0, 0, 0, 12),
+#             legend.position = "right"))
+# p.ls <- lapply(c(wf.2pp.p.ls, rf.2pp.p.ls), function(p) {
+#   p +
+#     theme(legend.position = "none",
+#           axis.title = element_blank(),
+#           title = element_blank())
+# })
+# y.grob <- textGrob(expression(''*Delta*''^14*'C (‰)'),
+#                    gp = gpar(fontface = "bold", fontsize = 14), rot = 90)
+# x.grob <- textGrob("Year", gp = gpar(fontface = "bold", fontsize = 14))
+# labs <- paste0(letters[1:6], ")", c(" andesite", " basalt", " granite"), c(rep(", cool", 3), rep(", cold", 3)))
+# pg <- arrangeGrob(
+#   plot_grid(plotlist = p.ls, labels = labs, label_x = .4, hjust = 0, label_y = .95, label_size = 9, label_fontface = "bold"), 
+#   left = y.grob, bottom = x.grob)
+# plot_grid(pg, lg, rel_widths = c(4, 1))
+# 
+# # 
+# rt.plot.fx <- function(fit1, fit2, fit3) {
+#   nms <- list(names(fit1), names(fit2), names(fit3))
+#   con.df <- do.call(
+#     rbind,
+#     lapply(seq_along(nms), function(i) 
+#       con.df.fx(nms[[i]]) %>% 
+#         mutate(pm = ifelse(grepl("AN", nms[[i]]), "andesite", ifelse(grepl("BS", nms[[i]]), "basalt", "granite")))))
+#   plot.df <- rbind(fit1[[1]], fit2[[1]], fit3[[1]])
+#   plot.df$site <- rep(unlist(nms), each = nrow(fit1[[1]]))
+#   plot.df$pm <- ifelse(grepl("AN", plot.df$site), "andesite", ifelse(grepl("BS", plot.df$site), "basalt", "granite"))
+#   atm <- plot.df[which(plot.df$pool == "atm"), ]
+#   plot.df %>%
+#     filter(pool == "bulkC" | pool == "respiration") %>%
+#     ggplot(., aes(years, d14C)) +
+#     geom_path(data = atm, aes(years, d14C), color = "black", size = .2) +
+#     geom_point(data = con.df, aes(Year, d14c, color = pm, shape = pool), alpha = .4, size = 2) +
+#     geom_path(aes(color = pm, linetype = pool), size = 1) +
+#     scale_color_manual(
+#       name = "",
+#       values = c("andesite" = andesite, "basalt" = basalt, "granite" = granite)) +
+#     scale_shape_manual(
+#       name = "",
+#       values = c("bulkC" = 16, "respiration" = 17)) +
+#     scale_linetype_manual(
+#       name = "",
+#       values = c("bulkC" = 1, "respiration" = 2)) +
+#     coord_cartesian(xlim = c(1950, 2022), ylim = c(-75, 275)) +
+#     guides(shape = guide_legend(override.aes = list(alpha = 1))) +
+#     theme_bw() +
+#     theme(panel.grid = element_blank(),
+#           axis.title = element_blank(),
+#           legend.key.width = unit(1, "cm"))
+# }
+# wf.2pp.p <- rt.plot.fx(mod.fitted.10.2pp.mcmc[3], mod.fitted.10.2pp.mcmc[6], mod.fitted.10.2pp.mcmc[9])
+# rf.2pp.p <- rt.plot.fx(mod.fitted.10.2pp.mcmc[2], mod.fitted.10.2pp.mcmc[5], mod.fitted.10.2pp.mcmc[8])
+# lg <- get_legend(
+#     wf.2pp.p +
+#       theme(legend.box.margin = margin(0, 0, 0, 12),
+#             legend.position = "bottom"))
+# p.ls <- lapply(list(wf.2pp.p, rf.2pp.p), function(p) p + theme(legend.position = "none"))
+# y.grob <- textGrob(expression(''*Delta*''^14*'C (‰)'),
+#                    gp = gpar(fontface = "bold", fontsize = 14), rot = 90)
+# x.grob <- textGrob("Year", gp = gpar(fontface = "bold", fontsize = 14))
+# labs <- c("a) cool", "b) cold")
+# pg <- arrangeGrob(
+#   plot_grid(plotlist = p.ls, labels = labs, label_x = .6, hjust = 0, label_y = .95, label_size = 12, label_fontface = "bold"), left = y.grob, bottom = x.grob)
+# p.mods <- plot_grid(pg, lg, ncol = 1, rel_heights = c(1, .2))
+# ggsave(filename = "/Users/jeff/nextCloud/Documents/Posters and talks/My posters:talks/IMPRS_Retreat_2022/mods2pp.wf.10.png", 
+#        plot = p.mods, height = 8.29, width = 14.28, units = "in")
+```
+
+```{r imprs-plots2}
+# rt.plot.fx2 <- function(fit1, fit2, fit3) {
+#   nms <- list(names(fit1), names(fit2), names(fit3))
+#   con.df <- do.call(
+#     rbind,
+#     lapply(seq_along(nms), function(i) 
+#       con.df.fx(nms[[i]]) %>% 
+#         mutate(pm = ifelse(grepl("AN", nms[[i]]), "andesite", ifelse(grepl("BS", nms[[i]]), "basalt", "granite")))))
+#   plot.df <- rbind(fit1[[1]], fit2[[1]], fit3[[1]])
+#   plot.df$site <- rep(unlist(nms), each = nrow(fit1[[1]]))
+#   plot.df$pm <- ifelse(grepl("AN", plot.df$site), "andesite", ifelse(grepl("BS", plot.df$site), "basalt", "granite"))
+#   atm <- plot.df[which(plot.df$pool == "atm"), ]
+#   plot.df %>%
+#     filter(pool == "bulkC" | pool == "respiration") %>%
+#     ggplot(., aes(years, d14C)) +
+#     geom_path(data = atm, aes(years, d14C), color = "black", size = .2) +
+#     geom_point(data = con.df, aes(Year, d14c, color = pm, shape = pool), alpha = .4, size = 4) +
+#     geom_path(aes(color = pm, linetype = pool), size = 1.5) +
+#     scale_color_manual(
+#       name = "",
+#       values = c("andesite" = andesite, "basalt" = basalt, "granite" = granite)) +
+#     scale_shape_manual(
+#       name = "",
+#       values = c("bulkC" = 16, "respiration" = 17)) +
+#     scale_linetype_manual(
+#       name = "",
+#       values = c("bulkC" = 1, "respiration" = 2)) +
+#     coord_cartesian(xlim = c(1950, 2022), ylim = c(-75, 275)) +
+#     guides(shape = guide_legend(override.aes = list(alpha = 1))) +
+#     theme_bw() +
+#     theme(panel.grid = element_blank(),
+#           axis.title = element_blank(),
+#           legend.key.width = unit(1.7, "cm"),
+#           axis.text = element_text(size = 24),
+#           legend.text = element_text(size = 24))
+# }
+# wf.2pp.p <- rt.plot.fx2(mod.fitted.10.2pp.mcmc[3], mod.fitted.10.2pp.mcmc[6], mod.fitted.10.2pp.mcmc[9])
+# rf.2pp.p <- rt.plot.fx2(mod.fitted.10.2pp.mcmc[2], mod.fitted.10.2pp.mcmc[5], mod.fitted.10.2pp.mcmc[8])
+# lg <- get_legend(
+#     wf.2pp.p +
+#       theme(legend.box.margin = margin(0, 0, 0, 12),
+#             legend.position = "bottom"))
+# p.ls <- lapply(list(wf.2pp.p, rf.2pp.p), function(p) p + theme(legend.position = "none"))
+# y.grob <- textGrob(expression(''*Delta*''^14*'C (‰)'),
+#                    gp = gpar(fontface = "bold", fontsize = 32), rot = 90)
+# x.grob <- textGrob("Year", gp = gpar(fontface = "bold", fontsize = 32))
+# labs <- c("a) cool", "b) cold")
+# pg <- arrangeGrob(
+#   plot_grid(plotlist = p.ls, labels = labs, label_x = .6, hjust = 0, label_y = .95, label_size = 32, label_fontface = "bold"), left = y.grob, bottom = x.grob)
+# p.mods <- plot_grid(pg, lg, ncol = 1, rel_heights = c(1, .2))
+# options(bitmapType = "cairo")
+# ggsave(filename = "/Users/jeff/nextCloud/Documents/Posters and talks/My posters:talks/IMPRS_Retreat_2022/mods2pp.wf.10.png", 
+#        plot = p.mods, height = 9, width = 17, units = "in")
+# 
+# 
+# sa.p <- sa.tt.2p.df %>%
+#   filter(depth == "0-10" & ECO != "pp") %>%
+#   filter(mod == "2pp") %>%
+#   ggplot(., aes(pm, age, fill = pm)) +
+#   geom_col(position = "dodge") +
+#   scale_fill_manual(
+#     name = "",
+#     values = c("andesite" = andesite, "basalt" = basalt, "granite" = granite)) +
+#   facet_grid(cols = vars(eco), rows = vars(depth), scales = "free") +
+#   ylab("Mean system age (yrs)") +
+#   theme_bw() +
+#   theme(panel.grid.minor = element_blank(),
+#         strip.background = element_blank(),
+#         strip.text = element_blank(),
+#         axis.title.x = element_blank(),
+#         axis.text.x = element_text(size = 24, angle = 45, hjust = 1),
+#         axis.title.y = element_text(size = 28),
+#         axis.text.y = element_text(size = 24),
+#         legend.position = "bottom")
+# ggsave(filename = "/Users/jeff/nextCloud/Documents/Posters and talks/My posters:talks/IMPRS_Retreat_2022/sa.png", 
+#        plot = sa.p, height = 5.1, width = 8.6, units = "in")
+# 
+# # check distributions
+sa.dist.ls <- mapply(rbind, sa.tt.2pp.ls[ix.imprs], SIMPLIFY = FALSE)
+sa.dist.df <- data.frame(PMeco = rep(c("2", "Zimmerman"), each = length(ages)),
+                         Age = rep(ages, 2),
+                         Density = c(ss.tt.2pp.ls$systemAgeDensity,
+                                     z.SA$systemAgeDensity))
+
+# plot age distributions, then pool age distributions
+ggplot(sa.dist.df, aes(Age, Density)) +
+  geom_path(aes(linetype = Model)) +
+  geom_vline(xintercept = s.SA$meanSystemAge) +
+  geom_vline(xintercept = z.SA$meanSystemAge, linetype = 2) +
+  scale_x_continuous(limits = c(0, 310)) +
+  ggtitle("Mean system age distributions (3-pool models)") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+```{r BGP-plots}
+# set plot output options
+options(bitmapType = "cairo")
+
+# warm site
+pp_10.2ps.lag.ls <- mod.fitted.2ps.lag[grep("pp_0-10", names(mod.fitted.2ps.lag))]
+pp_10.2ps.lag.df <- bind_rows(pp_10.2ps.lag.ls, .id = "PMeco_depth") %>%
+  mutate(pm = ifelse(grepl("AN", PMeco_depth), "andesite", ifelse(grepl("BS", PMeco_depth), "basalt", "granite")))
+pp_10.2ps.lag.con.df <- bind_rows(lapply(seq_along(names(pp_10.2ps.lag.ls)), function(i) {
+  con.df.fx(names(pp_10.2ps.lag.ls[i]))
+}), .id = "PMeco_depth") %>%
+  mutate(pm = ifelse(PMeco_depth == 1, "andesite", ifelse(PMeco_depth == 2, "basalt", "granite")))
+
+# atm
+atm <- pp_10.2ps.lag.df %>% filter(pool == "atm" & pm == "andesite")
+
+pp.p <- pp_10.2ps.lag.df %>%
+  filter(pool == "bulkC" | pool == "respiration") %>%
+  ggplot(., aes(years, d14C)) +
+  geom_path(data = atm, aes(years, d14C), size = .1) +
+  geom_path(aes(color = pm, linetype = pool), size = .8) +
+  geom_point(data = pp_10.2ps.lag.con.df, aes(Year, d14c, color = pm), size = 2, alpha = .5) +
+  scale_color_manual(name = "", values = c("andesite" = andesite, "basalt" = basalt, "granite" = granite)) +
+  scale_linetype_manual(name = "", values = c("bulkC" = 1, "respiration" = 2)) +
+  scale_x_continuous(limits = c(1950, 2022)) +
+  scale_y_continuous(limits = c(-60, 815)) +
+  # ggtitle("Warm site 2ps model fits") +
+  xlab("Year") +
+  ylab(expression(''*Delta*''^14*'C (‰)')) +
+  theme_bw() +
+  # theme(panel.grid = element_blank(), legend.position = "none")
+  theme(panel.grid = element_blank(),
+        legend.key.width = unit(.9, "cm"),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 14),
+        axis.title = element_text(size = 14))
+ggsave("/Users/jeff/Desktop/warm_2ps_lag_10_modFit.png", plot = pp.p,
+       width = 3.163, height = 2.5, units = c("in"))
+ggsave("/Users/jeff/Desktop/warm_2ps_lag_10_modFitBIG.png", plot = pp.p,
+       width = 8.49, height = 4.17, units = c("in"))
+
+# cool site
+wf_10.2ps.lag.ls <- mod.fitted.2ps.lag[grep("wf_0-10", names(mod.fitted.2ps.lag))]
+wf_10.2ps.lag.df <- bind_rows(wf_10.2ps.lag.ls, .id = "PMeco_depth") %>%
+  mutate(pm = ifelse(grepl("AN", PMeco_depth), "andesite", ifelse(grepl("BS", PMeco_depth), "basalt", "granite")))
+wf_10.2ps.lag.con.df <- bind_rows(lapply(seq_along(names(wf_10.2ps.lag.ls)), function(i) {
+  con.df.fx(names(wf_10.2ps.lag.ls[i]))
+}), .id = "PMeco_depth") %>%
+  mutate(pm = ifelse(PMeco_depth == 1, "andesite", ifelse(PMeco_depth == 2, "basalt", "granite")))
+
+wf.p <- wf_10.2ps.lag.df %>%
+  filter(pool == "bulkC" | pool == "respiration") %>%
+  ggplot(., aes(years, d14C)) +
+  geom_path(data = atm, aes(years, d14C), size = .1) +
+  geom_path(aes(color = pm, linetype = pool), size = .8) +
+  geom_point(data = wf_10.2ps.lag.con.df, aes(Year, d14c, color = pm), size = 2, alpha = .5) +
+  scale_color_manual(name = "", values = c("andesite" = andesite, "basalt" = basalt, "granite" = granite)) +
+  scale_linetype_manual(name = "", values = c("bulkC" = 1, "respiration" = 2)) +
+  scale_x_continuous(limits = c(1950, 2022)) +
+  scale_y_continuous(limits = c(-60, 815)) +
+  # ggtitle("Cool site 2ps model fits") +
+  xlab("Year") +
+  ylab(expression(''*Delta*''^14*'C (‰)')) +
+  theme_bw() +
+  # theme(panel.grid = element_blank(), legend.position = "none")
+  theme(panel.grid = element_blank(),
+        legend.key.width = unit(.9, "cm"),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 14),
+        axis.title = element_text(size = 14))
+ggsave("/Users/jeff/Desktop/cool_2ps_lag_10_modFit.png", plot = wf.p,
+       width = 3.163, height = 2.5, units = c("in"))
+ggsave("/Users/jeff/Desktop/cool_2ps_lag_10_modFitBIG.png", plot = wf.p,
+       width = 8.49, height = 4.17, units = c("in"))
+
+# cold site
+rf_10.2ps.lag.ls <- mod.fitted.2ps.lag[grep("rf_0-10", names(mod.fitted.2ps.lag))]
+rf_10.2ps.lag.df <- bind_rows(rf_10.2ps.lag.ls, .id = "PMeco_depth") %>%
+  mutate(pm = ifelse(grepl("AN", PMeco_depth), "andesite", ifelse(grepl("BS", PMeco_depth), "basalt", "granite")))
+rf_10.2ps.lag.con.df <- bind_rows(lapply(seq_along(names(rf_10.2ps.lag.ls)), function(i) {
+  con.df.fx(names(rf_10.2ps.lag.ls[i]))
+}), .id = "PMeco_depth") %>%
+  mutate(pm = ifelse(PMeco_depth == 1, "andesite", ifelse(PMeco_depth == 2, "basalt", "granite")))
+
+rf.p <- rf_10.2ps.lag.df %>%
+  filter(pool == "bulkC" | pool == "respiration") %>%
+  ggplot(., aes(years, d14C)) +
+  geom_path(data = atm, aes(years, d14C), size = .1) +
+  geom_path(aes(color = pm, linetype = pool), size = .8) +
+  geom_point(data = rf_10.2ps.lag.con.df, aes(Year, d14c, color = pm), size = 2, alpha = .5) +
+  scale_color_manual(name = "", values = c("andesite" = andesite, "basalt" = basalt, "granite" = granite)) +
+  scale_linetype_manual(name = "", values = c("bulkC" = 1, "respiration" = 2)) +
+  scale_x_continuous(limits = c(1950, 2022)) +
+  scale_y_continuous(limits = c(-60, 815)) +
+  # ggtitle("Cold site 2ps model fits") +
+  xlab("Year") +
+  ylab(expression(''*Delta*''^14*'C (‰)')) +
+  theme_bw() +
+  # theme(panel.grid = element_blank(), legend.position = "none")
+  theme(panel.grid = element_blank(),
+        legend.key.width = unit(.9, "cm"),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 14),
+        axis.title = element_text(size = 14))
+ggsave("/Users/jeff/Desktop/cold_2ps_lag_10_modFit.png", plot = rf.p,
+       width = 3.163, height = 2.5, units = c("in"))
+ggsave("/Users/jeff/Desktop/cold_2ps_lag_10_modFitBIG.png", plot = rf.p,
+       width = 8.49, height = 4.17, units = c("in"))
 ```

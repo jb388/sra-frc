@@ -26,7 +26,6 @@ C14.plot.fx(plot.df = modFun(pars = pars, In = 1, mod = "2pp", out = "", verbose
 # save pars
 pars.i.2pp[[PMeco_depth]] <- pars
 
-
 ## 10-20
 PMeco_depth <- names(pars.i.2pp)[2]
 kf <- .013
@@ -277,7 +276,7 @@ gam <- .7
 pars <- c(kf, ks, gam)
 
 # plot
-C14.plot.fx(plot.df = modFun(pars = pars, In = 1, mod = "2pp", out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
+C14.plot.fx(plot.df = modFun(pars = pars, In = 1, lag = lag, mod = "2pp", out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
             con.df = con.df.fx(PMeco_depth), 
             mod = "2pp", 
             # pool_filter = NULL,
@@ -371,7 +370,7 @@ gam <- .8
 pars <- c(kf, ks, gam)
 
 # plot
-C14.plot.fx(plot.df = modFun(pars = pars, In = 1, mod = "2pp", lag = 15, out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
+C14.plot.fx(plot.df = modFun(pars = pars, In = 1, mod = "2pp", out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
             con.df = con.df.fx(PMeco_depth), 
             mod = "2pp", 
             # pool_filter = NULL,
@@ -509,4 +508,6 @@ C14.plot.fx(plot.df = modFun(pars = pars, In = 1, mod = "2pp", out = "", verbose
 # save pars
 pars.i.2pp[[PMeco_depth]] <- pars
 #####
-save(pars.i.2pp, file = "pars.i.2pp.RData")
+
+# save
+save(pars.i.2pp, file = "/Users/jeff/sra-frc/data/derived/modFit_pars/pars.i.2pp.RData")

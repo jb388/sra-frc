@@ -254,7 +254,7 @@ PMeco_depth <- names(pars.i.1p)[20]
 pars <- .009
 
 # plot
-C14.plot.fx(modFun(pars = pars, mod = "1p", In = 1, lag = 20, out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
+C14.plot.fx(modFun(pars = pars, mod = "1p", In = 1, out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
             con.df.fx(PMeco_depth), "1p", pool_filter = c("bulkC", "atm"), PMeco_depth = PMeco_depth)
 
 # save pars
@@ -292,7 +292,7 @@ PMeco_depth <- names(pars.i.1p)[23]
 pars <- .0032
 
 # plot
-C14.plot.fx(modFun(pars = pars, mod = "1p", In = 1, lag = 20, out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
+C14.plot.fx(modFun(pars = pars, mod = "1p", In = 1, out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
             con.df.fx(PMeco_depth), "1p", pool_filter = c("bulkC", "atm"), PMeco_depth = PMeco_depth)
 
 # save pars
@@ -330,7 +330,7 @@ PMeco_depth <- names(pars.i.1p)[26]
 pars <- .005
 
 # plot
-C14.plot.fx(modFun(pars = pars, mod = "1p", In = 1, lag = 0, out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
+C14.plot.fx(modFun(pars = pars, mod = "1p", In = 1, out = "", verbose = TRUE, PMeco_depth = PMeco_depth), 
             con.df.fx(PMeco_depth), "1p", pool_filter = c("bulkC", "atm"), PMeco_depth = PMeco_depth)
 
 # save pars
@@ -348,4 +348,6 @@ C14.plot.fx(modFun(pars = pars, mod = "1p", In = 1, out = "", verbose = TRUE, PM
 # save pars
 pars.i.1p[[PMeco_depth]] <- pars
 #####
-save(pars.i.1p, file = "pars.i.1p.RData")
+
+# save
+save(pars.i.1p, file = "/Users/jeff/sra-frc/data/derived/modFit_pars/pars.i.1p.RData")

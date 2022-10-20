@@ -510,4 +510,6 @@ C14.plot.fx(plot.df = modFun(pars = pars, In = 1, mod = "2ps", out = "", verbose
 # save pars
 pars.i.2ps[[PMeco_depth]] <- pars
 #####
-save(pars.i.2ps, file = "pars.i.2ps.RData")
+
+# save
+save(pars.i.2ps, file = "/Users/jeff/sra-frc/data/derived/modFit_pars/pars.i.2ps.RData")

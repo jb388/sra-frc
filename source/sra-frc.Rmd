@@ -3,14 +3,14 @@ title: "Sierra Nevada Fraction Analysis"
 author: J. Beem-Miller
 date: \textit{\today}
 output:
-  html_document:
-    df_print: paged
-    toc: yes
-    toc_depth: '2'
   pdf_document:
     latex_engine: xelatex
     toc: yes
     toc_depth: 3
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
   html_notebook:
     css: "custom.css"
     toc: yes
@@ -563,7 +563,7 @@ sra.09.lyr.C <- unsplit(lapply(
 ### 2019
 
 ```{r load-2019-soc}
-load("/Users/jeff/sra-ts/source/sra.19.blkC.RData")
+load("sra.19.blkC.RData")
 sra.soc.2019.df <- sra.19.blkC %>%
   filter(lyr_bot < 31) %>%
   group_by(PMeco, lyr_bot) %>%
@@ -633,8 +633,6 @@ lapply(seq_along(frc.C.19.plot.ls), function(i) {
 })
 ```
 
-### C distribution
-
 ```{r merge-frc-mass-C}
 ## merge C and mass data
 # '01
@@ -695,6 +693,15 @@ if (!("lyr_c_mass_syn" %in% names(sra.frc.mss.C.19.df))) {
 sra.frc.mss.C.19.df$frc_c_pct <- sra.frc.mss.C.19.df$mass_c_g / sra.frc.mss.C.19.df$lyr_c_mass_syn
 sra.frc.mss.C.19.df$ECO <- factor(sra.frc.mss.C.19.df$ECO, levels = c("pp", "wf", "rf"))
 ```
+
+### C stocks
+```{r frc-c-stocks}
+# load soc stock data
+# calculate fraction stocks
+```
+
+
+### C distribution
 
 ```{r plot-frcC-pct-fx}
 # box plot fx
@@ -930,6 +937,8 @@ sra.frc.soc.wide.df %>%
   theme_bw() +
   theme(panel.grid.minor = element_blank())
 ```
+
+What is the 14C of the lost/"mobilized" (cf. Gentsch, Mikutta, Alves, et al., 2015; Gentsch, et al., 2018) fraction? Should be able to calculate this by subtraction.
 
 ## Fraction 14C
 ### Depth profiles
@@ -1712,20 +1721,20 @@ char.fx <- function(pom_14c) {
 }
 
 # make df of pom + minC, calculate char C using Koarashi data
-# pom.c.14c.01.df <- merge(
-#   pom.c.01.df,
-#   dens.01.09.19.sp.df %>%
-#     filter(year == 2001),
-#   by = c("PMeco", "frc", "lyr_bot")) %>%
-#   mutate(wtd_14c = c_POM_frc * frc_14c) %>%
-#   group_by(PMeco, pm, eco, lyr_bot, soc_POM, year) %>%
-#   summarize(pom_14c = sum(wtd_14c))
-# pom.c.14c.01.df <- pom.c.14c.01.df %>%
-#   mutate(c_pct_char = char.fx(pom_14c),
-#          soc_char = c_pct_char * soc_POM * 10^-2,
-#          soc_nonChar = soc_POM - soc_char,
-#          d14c_char = -577.9,
-#          d14c_nonChar = (pom_14c - d14c_char * c_pct_char) / (100 - c_pct_char))
+pom.c.14c.01.df <- merge(
+  pom.c.01.df,
+  dens.01.09.19.sp.df %>%
+    filter(year == 2001),
+  by = c("PMeco", "frc", "lyr_bot")) %>%
+  mutate(wtd_14c = c_POM_frc * frc_14c) %>%
+  group_by(PMeco, pm, eco, lyr_bot, soc_POM, year) %>%
+  summarize(pom_14c = sum(wtd_14c))
+pom.c.14c.01.df <- pom.c.14c.01.df %>%
+  mutate(c_pct_char = char.fx(pom_14c),
+         soc_char = c_pct_char * soc_POM * 10^-2,
+         soc_nonChar = soc_POM - soc_char,
+         d14c_char = -577.9,
+         d14c_nonChar = (pom_14c - d14c_char * c_pct_char) / (100 - c_pct_char))
 # ggplot(pom.c.14c.01.df, aes(eco, d14c_nonChar, fill = pm)) +
 #   geom_col(position = "dodge") +
 #   scale_fill_manual(values = c("andesite" = andesite,
@@ -2081,7 +2090,7 @@ frc.14c.df <- bind_rows(ams_results_ls$`ams_jena_results-frc19-MOM-thml_2022-01-
   select(PM, ECO, thml_frc, d14c, d14c_err, fm, fm_err)
 
 # save
-save(frc.14c.df, file = "frc.14c.df")
+save(frc.14c.df, file = "frc.14c.df.RData")
 
 # plot
 ggplot(frc.14c.df, aes(thml_frc, d14c, fill = PM)) +
@@ -2311,7 +2320,7 @@ xlim <- convert_fm_d14c(
              BSwf.tml.fm.dist$stats$NCubstats,
             GRwf.tml.fm.dist$stats$NCubstats) + .04),
   obs_date_y = 2019, verbose = FALSE)
-rbind(
+p.tml <- rbind(
   data.frame(PM = "andesite", ANwf.tml.fm.dist$area),
   data.frame(PM = "basalt", BSwf.tml.fm.dist$area),
   data.frame(PM = "granite", GRwf.tml.fm.dist$area)) %>%
@@ -2331,4 +2340,35 @@ rbind(
   xlab(expression('C-weighted '*Delta*''^14*'C (‰)')) + 
   theme_bw() +
   theme(panel.grid = element_blank())
+
+options(bitmapType = "cairo")
+p.tml2 <- rbind(
+  data.frame(PM = "andesite", ANwf.tml.fm.dist$area),
+  data.frame(PM = "basalt", BSwf.tml.fm.dist$area),
+  data.frame(PM = "granite", GRwf.tml.fm.dist$area)) %>%
+  ggplot(.) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_density(aes(x = NCub_14c, y = ..density.., weight = abs(area), 
+                   fill = PM, color = PM), alpha = .6) +
+  scale_color_manual(name = "",
+                     values = c("andesite" = andesite,
+                                "basalt" = basalt,
+                                "granite" = granite)) +
+  scale_fill_manual(name = "",
+                    values = c("andesite" = andesite,
+                               "basalt" = basalt,
+                               "granite" = granite)) +
+  xlim(xlim) +
+  xlab(expression('C-weighted '*Delta*''^14*'C (‰)')) + 
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(size = 24),
+        axis.title.x = element_text(size = 28),
+        axis.title.y = element_text(size = 28),
+        axis.text.y = element_text(size = 24),
+        legend.text = element_text(size = 24),
+        legend.position = "bottom")
+ggsave(filename = "/Users/jeff/nextCloud/Documents/Posters and talks/My posters:talks/IMPRS_Retreat_2022/tml_14c.png", 
+       plot = p.tml2, height = 6.61, width = 12.28, units = "in")
+p.tml2
 ```
