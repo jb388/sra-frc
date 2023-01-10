@@ -67,8 +67,8 @@ pars.i.2pp[[PMeco_depth]] <- pars
 ## 0-10
 PMeco_depth <- names(pars.i.2pp)[4]
 kf <- .015
-ks <- .003
-gam <- .9
+ks <- 0.003
+gam <- 0.9
 pars <- c(kf, ks, gam)
 
 # plot

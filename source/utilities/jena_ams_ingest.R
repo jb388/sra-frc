@@ -13,17 +13,29 @@ read_jena_ams_results <- function(jena_ams_dir, template_file, start = 27) {
   }
   
   # start input at column header row (27)
-  template <- read.xlsx(template_file, startRow = start) 
+  template <- read.xlsx(template_file, startRow = start)
 
   # get pathnames for .xlsx files in jena_ams_dir
   data_files <- list.files(jena_ams_dir, pattern = "\\.xlsx", full.names = TRUE)
   # remove open .xlsx files
   data_files <- grep(data_files, pattern='\\~\\$', inv=T, value=T)
   
-  # check that row 27 column names match the template
+  # check template format and data structure
   for(i in seq_along(data_files)) {
-    for(j in seq_along(names(read.xlsx(data_files[i], startRow = start)))) {
-      if(names(read.xlsx(data_files[i], startRow = start))[j] != names(template)[j])
+    
+    # check for template version
+    df <- read.xlsx(data_files[i], startRow = start)
+    if (names(df)[1] != "P-Nr.") {
+      start <- 31
+      template_file <- "../data/raw/ams_jena_template_2022-01-24/ams_jena_template.xlsx"
+      template <- read.xlsx(template_file, startRow = start)
+      df <- read.xlsx(data_files[i], startRow = start)
+    }
+    
+    # check that names match
+    nms <- names(df)
+    for(j in seq_along(nms)) {
+      if(names(df)[j] != names(template)[j])
         cat(paste("Row", start, "of ", data_files[i], " does not contain proper column names"))
     }
   }
